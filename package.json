@@ -6,15 +6,22 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "@automerge/automerge": "^3.5.0",
     "@automerge/automerge-repo": "2.6.0-alpha.3",
     "@automerge/automerge-repo-storage-indexeddb": "2.6.0-alpha.3",
+    "@babel/standalone": "^7",
+    "babel-preset-solid": "^1.9.16",
+    "maplibre-gl": "^6.15.0",
     "solid-js": "^1.9.17"
   },
   "devDependencies": {
+    "@types/babel__standalone": "^7.1.9",
+    "prettier": "3.7.4",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
     "vite-plugin-solid": "^2.11.14",

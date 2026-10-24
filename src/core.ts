@@ -20,8 +20,14 @@ import {
 
 export type Process = AutomergeUrl | undefined; // the card acting; undefined = bootstrap
 export type Message<Req, Res> = string & { __req?: Req; __res?: Res };
-export type Handler<Req, Res> = (req: Req, next: (req?: Req) => Res, from: Node) => Res;
+export type Handler<Req, Res> = (
+  req: Req,
+  next: (req?: Req) => Res,
+  from: Node,
+) => Res;
 export type Behavior = (node: Node) => void;
+export type Point = { x: number; y: number };
+export type Tagged = { "@tags": Record<string, true> };
 
 export class Node {
   constructor(
@@ -51,7 +57,8 @@ export class Node {
   };
 
   // bubbles up: this node's handlers (newest first), then its ancestors'
-  request = <Req, Res>(msg: Message<Req, Res>, req?: Req): Res => dispatch(this, msg, req, this);
+  request = <Req, Res>(msg: Message<Req, Res>, req?: Req): Res =>
+    dispatch(this, msg, req, this);
 
   attach = (behavior: Behavior, card?: AutomergeUrl): (() => void) =>
     createRoot((dispose) => {
@@ -61,7 +68,10 @@ export class Node {
 }
 
 // `fallback` answers when no handler does, e.g. events nobody subscribed to
-export function message<Req, Res>(type: string, fallback?: (req: Req) => Res): Message<Req, Res> {
+export function message<Req, Res>(
+  type: string,
+  fallback?: (req: Req) => Res,
+): Message<Req, Res> {
   if (fallback) fallbacks.set(type, fallback);
   return type as Message<Req, Res>;
 }
@@ -79,6 +89,7 @@ export type State<T = any> = {
   put(values: Record<string, unknown>): void; // several paths at once
   overlays(): Record<string, Overlay>; // every path that has a put
   overlays(path: string): Overlay | undefined; // just that path
+  clone(): Node; // a fresh copy of the stored value, without puts; place it by assigning it in a change
 };
 
 export type Overlay = {
@@ -88,12 +99,33 @@ export type Overlay = {
 
 // the nearest node tagged `tag`, checking each ancestor and its direct children, as seen by the requester.
 // With `orCreate`, a missing object is created in the root's `objects` from that template.
-export const Lookup = message<{ tag: string; orCreate?: Record<string, unknown> }, Node | undefined>("core/lookup");
+export const Lookup = message<
+  { tag: string; orCreate?: Record<string, unknown> },
+  Node | undefined
+>("core/lookup");
 
 export function rootOf(node: Node): Node {
   let n = node;
   while (n.parent) n = n.parent;
   return n;
+}
+
+export function state<T>(node: Node): T {
+  return node.request(State).read();
+}
+
+export function hasTag(node: Node, tag: string): boolean {
+  return Boolean(state<Partial<Tagged>>(node)["@tags"]?.[tag]);
+}
+
+// nodes referenced from a node's state, directly or in a list
+export function childNodes(node: Node): Node[] {
+  const out: Node[] = [];
+  for (const value of Object.values(state<Record<string, unknown>>(node))) {
+    for (const v of Array.isArray(value) ? value : [value])
+      if (v instanceof Node) out.push(v);
+  }
+  return out;
 }
 
 export function backend(repo: Repo): Behavior {
@@ -103,14 +135,24 @@ export function backend(repo: Repo): Behavior {
 
   return (root) => {
     root.on(State, (_, __, from) => ({
-      read: () => hydrate(applyPuts(docOf(from.url).read(), layersOf(from.url)[0]()), from),
-      change: (fn) => docOf(from.url).change((draft) => fn(adopting(draft)), from.process),
+      read: () =>
+        hydrate(
+          applyPuts(docOf(from.url).read(), layersOf(from.url)[0]()),
+          from,
+        ),
+      change: (fn) =>
+        docOf(from.url).change((draft) => fn(adopting(draft)), from.process),
       put: ((path: string | Record<string, unknown>, value?: unknown) =>
-        put(from, typeof path === "string" ? { [path]: value } : path)) as State["put"],
+        put(
+          from,
+          typeof path === "string" ? { [path]: value } : path,
+        )) as State["put"],
       overlays: ((path?: string) => {
         const all = overlays(docOf(from.url).read(), layersOf(from.url)[0]());
         return path === undefined ? all : all[path];
       }) as State["overlays"],
+      clone: () =>
+        Node.create(structuredClone(untrack(() => docOf(from.url).read()))),
     }));
 
     root.on(Lookup, ({ tag, orCreate }, _, from) => {
@@ -131,7 +173,7 @@ export function backend(repo: Repo): Behavior {
   function find(from: Node, tag: string): Node | undefined {
     for (let n: Node | undefined = from; n; n = n.parent) {
       if (hasTag(n, tag)) return n;
-      const sibling = childrenOf(n).find((c) => hasTag(c, tag));
+      const sibling = childNodes(n).find((c) => hasTag(c, tag));
       if (sibling) return sibling;
     }
     return undefined;
@@ -141,7 +183,9 @@ export function backend(repo: Repo): Behavior {
     const [current, set] = layersOf(from.url);
     if (!untrack(current).has(from.process)) {
       // the layer disappears with the process that wrote it
-      runWithOwner(from.owner, () => onCleanup(() => set((m) => without(m, from.process))));
+      runWithOwner(from.owner, () =>
+        onCleanup(() => set((m) => without(m, from.process))),
+      );
     }
     set((m) => withPut(m, from.process, values, () => ++seq));
   }
@@ -152,7 +196,8 @@ export function backend(repo: Repo): Behavior {
     return new Proxy(Array.isArray(draft) ? [] : {}, {
       get: (_, k) => {
         const v = draft[k];
-        if (typeof v === "function") return (...args: unknown[]) => v.apply(draft, args.map(adopt));
+        if (typeof v === "function")
+          return (...args: unknown[]) => v.apply(draft, args.map(adopt));
         return v !== null && typeof v === "object" ? adopting(v) : v;
       },
       set: (_, k, v) => ((draft[k] = adopt(v)), true),
@@ -165,7 +210,9 @@ export function backend(repo: Repo): Behavior {
     if (!(value instanceof Node)) return value;
     const doc = fresh.get(value.url);
     if (doc) {
-      const handle = repo.import(A.save(doc), { docId: parseAutomergeUrl(value.url).documentId });
+      const handle = repo.import(A.save(doc), {
+        docId: parseAutomergeUrl(value.url).documentId,
+      });
       docs.set(value.url, track(handle));
       fresh.delete(value.url);
     }
@@ -177,7 +224,10 @@ export function backend(repo: Repo): Behavior {
   }
 
   function layersOf(url: AutomergeUrl): Signal<Layers> {
-    return layers.get(url) ?? layers.set(url, createSignal<Layers>(new Map())).get(url)!;
+    return (
+      layers.get(url) ??
+      layers.set(url, createSignal<Layers>(new Map())).get(url)!
+    );
   }
 
   function load(url: AutomergeUrl): Stored {
@@ -190,7 +240,8 @@ export function backend(repo: Repo): Behavior {
     });
     return {
       read: () => doc() ?? {},
-      change: (fn, process) => handle?.change(fn, process ? { message: process } : undefined),
+      change: (fn, process) =>
+        handle?.change(fn, process ? { message: process } : undefined),
     };
   }
 
@@ -199,12 +250,16 @@ export function backend(repo: Repo): Behavior {
     handle.on("change", ({ doc }) => setDoc(() => doc));
     return {
       read: () => doc() ?? {},
-      change: (fn, process) => handle.change(fn, process ? { message: process } : undefined),
+      change: (fn, process) =>
+        handle.change(fn, process ? { message: process } : undefined),
     };
   }
 }
 
-type Stored = { read(): any; change(fn: (doc: any) => void, process: Process): void };
+type Stored = {
+  read(): any;
+  change(fn: (doc: any) => void, process: Process): void;
+};
 type Layer = Record<string, { value: unknown; seq: number }>;
 type Layers = Map<Process, Layer>;
 
@@ -214,28 +269,24 @@ const fresh = new Map<AutomergeUrl, A.Doc<any>>(); // created, not yet placed in
 const children = new WeakMap<Node, Map<AutomergeUrl, Node>>();
 
 function hydrate(value: unknown, parent: Node): any {
-  if (typeof value === "string") return isValidAutomergeUrl(value) ? childOf(parent, value) : value;
-  if (value === null || typeof value !== "object" || value instanceof Node) return value;
-  return new Proxy(value, { get: (t, k) => hydrate(Reflect.get(t, k), parent) });
+  if (typeof value === "string")
+    return isValidAutomergeUrl(value) ? childOf(parent, value) : value;
+  if (value === null || typeof value !== "object" || value instanceof Node)
+    return value;
+  return new Proxy(value, {
+    get: (t, k) => hydrate(Reflect.get(t, k), parent),
+  });
 }
 
 function childOf(parent: Node, url: AutomergeUrl): Node {
-  const known = children.get(parent) ?? children.set(parent, new Map()).get(parent)!;
-  return known.get(url) ?? known.set(url, new Node(url, parent, parent.process, parent.owner)).get(url)!;
-}
-
-function hasTag(node: Node, tag: string): boolean {
-  return Boolean(node.request(State).read()["@tags"]?.[tag]);
-}
-
-// nodes referenced directly from a node's state, or from a list in it
-function childrenOf(node: Node): Node[] {
-  const out: Node[] = [];
-  for (const value of Object.values(node.request(State).read())) {
-    if (value instanceof Node) out.push(value);
-    else if (Array.isArray(value)) out.push(...value.filter((v): v is Node => v instanceof Node));
-  }
-  return out;
+  const known =
+    children.get(parent) ?? children.set(parent, new Map()).get(parent)!;
+  return (
+    known.get(url) ??
+    known
+      .set(url, new Node(url, parent, parent.process, parent.owner))
+      .get(url)!
+  );
 }
 
 // the same position in the tree, seen by another process
@@ -248,13 +299,17 @@ function rebind(node: Node, process: Process, owner: Owner | null): Node {
 function applyPuts(doc: Record<string, unknown>, layers: Layers) {
   const puts = [...layers.values()].flatMap((layer) => Object.entries(layer));
   puts.sort(([, a], [, b]) => a.seq - b.seq);
-  return puts.reduce((value, [path, put]) => setPath(value, path.split("/"), put.value), doc);
+  return puts.reduce(
+    (value, [path, put]) => setPath(value, path.split("/"), put.value),
+    doc,
+  );
 }
 
 // copies only the objects along the path
 function setPath(target: any, [key, ...rest]: string[], value: unknown): any {
   const copy = Array.isArray(target) ? [...target] : { ...target };
-  copy[key] = rest.length === 0 ? value : setPath(target?.[key] ?? {}, rest, value);
+  copy[key] =
+    rest.length === 0 ? value : setPath(target?.[key] ?? {}, rest, value);
   return copy;
 }
 
@@ -262,18 +317,30 @@ function getPath(target: any, path: string): unknown {
   return path.split("/").reduce((value, key) => value?.[key], target);
 }
 
-function overlays(doc: Record<string, unknown>, layers: Layers): Record<string, Overlay> {
+function overlays(
+  doc: Record<string, unknown>,
+  layers: Layers,
+): Record<string, Overlay> {
   const out: Record<string, Overlay> = {};
   for (const [process, layer] of layers) {
     for (const [path, { value, seq }] of Object.entries(layer)) {
-      (out[path] ??= { stored: getPath(doc, path), layers: [] }).layers.push({ process, value, seq });
+      (out[path] ??= { stored: getPath(doc, path), layers: [] }).layers.push({
+        process,
+        value,
+        seq,
+      });
     }
   }
   for (const o of Object.values(out)) o.layers.sort((a, b) => b.seq - a.seq);
   return out;
 }
 
-function withPut(layers: Layers, process: Process, values: Record<string, unknown>, next: () => number) {
+function withPut(
+  layers: Layers,
+  process: Process,
+  values: Record<string, unknown>,
+  next: () => number,
+) {
   const layer: Layer = { ...layers.get(process) };
   for (const [path, value] of Object.entries(values)) {
     if (value === undefined) delete layer[path];
@@ -292,10 +359,17 @@ type Entry = { type: string; handler: Handler<any, any> };
 const handlers = new Map<AutomergeUrl, Signal<Entry[]>>();
 
 function registry(url: AutomergeUrl): Signal<Entry[]> {
-  return handlers.get(url) ?? handlers.set(url, createSignal<Entry[]>([])).get(url)!;
+  return (
+    handlers.get(url) ?? handlers.set(url, createSignal<Entry[]>([])).get(url)!
+  );
 }
 
-function dispatch(here: Node | undefined, type: string, req: unknown, from: Node): any {
+function dispatch(
+  here: Node | undefined,
+  type: string,
+  req: unknown,
+  from: Node,
+): any {
   if (!here) {
     const fallback = fallbacks.get(type);
     if (fallback) return fallback(req);
