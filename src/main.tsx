@@ -5,6 +5,7 @@ import { Dynamic, render } from "solid-js/web";
 import dealer from "./cards/dealer";
 import { backend, Node } from "./core";
 import { hasTag, state, type Canvas, type Card, type Dealer, type Shape } from "./lib";
+import "./theme.css";
 
 const repo = new Repo({ storage: new IndexedDBStorageAdapter() });
 const root = new Node(canvasUrl());
@@ -32,12 +33,13 @@ function canvasUrl(): AutomergeUrl {
 
 // the root is the one document created outside a change; everything else is placed via Node.create
 function createCanvas(): AutomergeUrl {
-  const cards = ["canvas", "pointer", "pen", "line"].map(card);
+  const cards = ["canvas", "pointer", "pen", "line", "tool", "inspector"].map(card);
   const pointer = create<Shape>({ "@tags": { shape: true, pointer: true }, x: 0, y: 0 });
   const pen = create<Shape>({ "@tags": { shape: true, pen: true }, x: 16, y: 16 });
   const dealer = create<Dealer>({ "@tags": { shape: true, dealer: true }, x: 16, y: 72, cards });
+  const inspector = create<Shape>({ "@tags": { shape: true, inspector: true }, x: 480, y: 16 });
   // the pointer goes first so it renders underneath every other shape
-  return create<Canvas>({ "@tags": { canvas: true }, shapes: [pointer, pen, dealer] });
+  return create<Canvas>({ "@tags": { canvas: true }, shapes: [pointer, pen, dealer, inspector] });
 }
 
 function card(name: string) {

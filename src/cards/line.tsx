@@ -1,20 +1,21 @@
-import { State, type Node } from "../core";
-import { state, type Line } from "../lib";
+import { State, type Behavior } from "../core";
+import type { Line } from "../lib";
 
-export default (node: Node) => {
-  const line = () => state<Line>(node);
+export default (({ request }) => {
+  const line = () => request(State).read<Line>();
 
-  node.request(State).overlay({
+  request(State).put({
     view: () => (
-      <polyline
-        points={(line().points ?? []).map((p) => `${p.x},${p.y}`).join(" ")}
-        stroke={line().color}
-        stroke-width={line().width}
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        fill="none"
-        pointer-events="none"
-      />
+      <svg class="line" width="1" height="1">
+        <polyline
+          points={(line().points ?? []).map((p) => `${p.x},${p.y}`).join(" ")}
+          stroke={line().color}
+          stroke-width={line().width}
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          fill="none"
+        />
+      </svg>
     ),
   });
-};
+}) satisfies Behavior;

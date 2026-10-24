@@ -1,12 +1,13 @@
 import { createEffect, createMemo, createResource, For, mapArray, onCleanup, untrack, type Component } from "solid-js";
 import { State, type Behavior, type Node } from "../core";
-import { hasTag, state, type Applied, type Canvas, type Card, type Dealer } from "../lib";
+import { hasTag, state, tint, type Applied, type Canvas, type Card, type Dealer } from "../lib";
 
 const modules = import.meta.glob<{ default: Behavior }>("./*.tsx");
 
-export default (node: Node) => {
-  const surface = node.parent!; // the dealer deals onto whatever it is placed on
-  const matches = createMemo(() => matchCards(surface, node));
+export default (({ parent, request }) => {
+  const surface = parent!; // the dealer deals onto whatever it is placed on
+  const cards = () => request(State).read<Dealer>().cards ?? [];
+  const matches = createMemo(() => matchCards(surface, cards()));
   const keys = createMemo(() => [...matches().keys()].sort(), [], { equals: sameArray });
   const pair = (key: string) => untrack(() => matches().get(key)!);
 
@@ -21,32 +22,34 @@ export default (node: Node) => {
     }),
   );
 
-  createEffect(() => node.request(State).overlay({ applied: keys().map(pair) }));
-  node.request(State).overlay({ view: () => <DealerView node={node} /> });
-};
+  const applied = () => keys().map(pair);
+  createEffect(() => request(State).put({ applied: applied() }));
+  request(State).put({ view: () => <DealerView applied={applied()} /> });
+}) satisfies Behavior;
 
-const DealerView: Component<{ node: Node }> = (props) => {
-  const applied = () => state<Dealer>(props.node).applied ?? [];
-
-  return (
-    <g pointer-events="none" font-family="sans-serif" font-size="12">
-      <text y={12} font-weight="bold">
-        dealer
-      </text>
-      <For each={applied()}>
-        {(a, i) => (
-          <text y={30 + i() * 16}>
-            {state<Card>(a.card).name} → {a.target.url.slice(-6)}
-          </text>
+const DealerView: Component<{ applied: Applied[] }> = (props) => (
+  <div class="panel" style={{ width: "220px" }}>
+    <div class="titlebar">
+      <span>Dealer</span>
+      <span class="grip" />
+    </div>
+    <div class="scroll" style={{ padding: "4px 0 6px" }}>
+      <For each={props.applied}>
+        {(a) => (
+          <div class="dealt">
+            <span class="chip" style={{ "--chip": tint(state<Card>(a.card).name) }}>
+              {state<Card>(a.card).name}
+            </span>
+            <span class="muted">on {a.target.url.slice(-6)}</span>
+          </div>
         )}
       </For>
-    </g>
-  );
-};
+    </div>
+  </div>
+);
 
-function matchCards(surface: Node, dealer: Node): Map<string, Applied> {
+function matchCards(surface: Node, cards: Node[]): Map<string, Applied> {
   const targets = [surface, ...(state<Canvas>(surface).shapes ?? [])];
-  const cards = state<Dealer>(dealer).cards ?? [];
   const matches = new Map<string, Applied>();
 
   for (const target of targets) {

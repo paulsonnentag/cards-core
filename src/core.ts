@@ -38,42 +38,47 @@ export class Node {
     return new Node(url);
   }
 
-  // handlers live as long as the process that registered them
-  on<Req, Res>(msg: Message<Req, Res>, handler: Handler<Req, Res>): void {
+  // methods are arrow fields so behaviors can destructure them: ({ request, on }) => …
+
+  // handlers live as long as the computation that registered them, or else the process
+  on = <Req, Res>(msg: Message<Req, Res>, handler: Handler<Req, Res>): void => {
     const [, set] = registry(this.url);
     const entry: Entry = { type: msg, handler };
     set((hs) => [entry, ...hs]);
-    runWithOwner(this.owner ?? getOwner(), () =>
+    runWithOwner(getOwner() ?? this.owner, () =>
       onCleanup(() => set((hs) => hs.filter((h) => h !== entry))),
     );
-  }
+  };
 
   // bubbles up: this node's handlers (newest first), then its ancestors'
-  request<Req, Res>(msg: Message<Req, Res>, req?: Req): Res {
-    return dispatch(this, msg, req, this);
-  }
+  request = <Req, Res>(msg: Message<Req, Res>, req?: Req): Res => dispatch(this, msg, req, this);
 
-  attach(behavior: Behavior, card?: AutomergeUrl): () => void {
-    return createRoot((dispose) => {
+  attach = (behavior: Behavior, card?: AutomergeUrl): (() => void) =>
+    createRoot((dispose) => {
       behavior(rebind(this, card, getOwner()));
       return dispose;
     });
-  }
 }
 
-export function message<Req, Res>(type: string): Message<Req, Res> {
+// `fallback` answers when no handler does, e.g. events nobody subscribed to
+export function message<Req, Res>(type: string, fallback?: (req: Req) => Res): Message<Req, Res> {
+  if (fallback) fallbacks.set(type, fallback);
   return type as Message<Req, Res>;
 }
+
+const fallbacks = new Map<string, (req: any) => any>();
 
 // the one state message, answered by the backend at the root: an object's state as the requesting process sees it
 export const State = message<void, State>("core/state");
 
 export type State<T = any> = {
-  read(): T; // stored value with overlays applied; urls come back as nodes
+  read<R = T>(): R; // stored value with puts applied; urls come back as nodes
   change(fn: (doc: T) => void): void; // write to the stored value, attributed to the requesting card
-  overlay(partial: Partial<T>): void; // layer ephemeral values on top, for this process
-  overlays(): Record<string, Overlay>; // every key that has an overlay
-  overlays(key: keyof T & string): Overlay | undefined; // just that key
+  // ephemeral values at a "/"-separated path, in this process's layer; undefined removes the put
+  put(path: string, value: unknown): void;
+  put(values: Record<string, unknown>): void; // several paths at once
+  overlays(): Record<string, Overlay>; // every path that has a put
+  overlays(path: string): Overlay | undefined; // just that path
 };
 
 export type Overlay = {
@@ -98,12 +103,13 @@ export function backend(repo: Repo): Behavior {
 
   return (root) => {
     root.on(State, (_, __, from) => ({
-      read: () => hydrate(overlay(docOf(from.url).read(), layersOf(from.url)[0]()), from),
+      read: () => hydrate(applyPuts(docOf(from.url).read(), layersOf(from.url)[0]()), from),
       change: (fn) => docOf(from.url).change((draft) => fn(adopting(draft)), from.process),
-      overlay: (partial) => put(from, partial),
-      overlays: ((key?: string) => {
+      put: ((path: string | Record<string, unknown>, value?: unknown) =>
+        put(from, typeof path === "string" ? { [path]: value } : path)) as State["put"],
+      overlays: ((path?: string) => {
         const all = overlays(docOf(from.url).read(), layersOf(from.url)[0]());
-        return key === undefined ? all : all[key];
+        return path === undefined ? all : all[path];
       }) as State["overlays"],
     }));
 
@@ -131,13 +137,13 @@ export function backend(repo: Repo): Behavior {
     return undefined;
   }
 
-  function put(from: Node, partial: Record<string, unknown>) {
+  function put(from: Node, values: Record<string, unknown>) {
     const [current, set] = layersOf(from.url);
     if (!untrack(current).has(from.process)) {
       // the layer disappears with the process that wrote it
       runWithOwner(from.owner, () => onCleanup(() => set((m) => without(m, from.process))));
     }
-    set((m) => withPut(m, from.process, partial, () => ++seq));
+    set((m) => withPut(m, from.process, values, () => ++seq));
   }
 
   // wraps a change draft so that assigning a Node stores its url, importing fresh documents on the way.
@@ -238,36 +244,40 @@ function rebind(node: Node, process: Process, owner: Owner | null): Node {
   return new Node(node.url, parent, process, owner);
 }
 
-function overlay(doc: Record<string, unknown>, layers: Layers) {
-  const merged: Record<string, unknown> = { ...doc };
-  const newest: Record<string, number> = {};
-  for (const layer of layers.values()) {
-    for (const [key, { value, seq }] of Object.entries(layer)) {
-      if (seq > (newest[key] ?? -1)) {
-        newest[key] = seq;
-        merged[key] = value;
-      }
-    }
-  }
-  return merged;
+// every put from every process, oldest first, so a later put wins at its path
+function applyPuts(doc: Record<string, unknown>, layers: Layers) {
+  const puts = [...layers.values()].flatMap((layer) => Object.entries(layer));
+  puts.sort(([, a], [, b]) => a.seq - b.seq);
+  return puts.reduce((value, [path, put]) => setPath(value, path.split("/"), put.value), doc);
+}
+
+// copies only the objects along the path
+function setPath(target: any, [key, ...rest]: string[], value: unknown): any {
+  const copy = Array.isArray(target) ? [...target] : { ...target };
+  copy[key] = rest.length === 0 ? value : setPath(target?.[key] ?? {}, rest, value);
+  return copy;
+}
+
+function getPath(target: any, path: string): unknown {
+  return path.split("/").reduce((value, key) => value?.[key], target);
 }
 
 function overlays(doc: Record<string, unknown>, layers: Layers): Record<string, Overlay> {
   const out: Record<string, Overlay> = {};
   for (const [process, layer] of layers) {
-    for (const [key, { value, seq }] of Object.entries(layer)) {
-      (out[key] ??= { stored: doc[key], layers: [] }).layers.push({ process, value, seq });
+    for (const [path, { value, seq }] of Object.entries(layer)) {
+      (out[path] ??= { stored: getPath(doc, path), layers: [] }).layers.push({ process, value, seq });
     }
   }
   for (const o of Object.values(out)) o.layers.sort((a, b) => b.seq - a.seq);
   return out;
 }
 
-function withPut(layers: Layers, process: Process, partial: Record<string, unknown>, next: () => number) {
+function withPut(layers: Layers, process: Process, values: Record<string, unknown>, next: () => number) {
   const layer: Layer = { ...layers.get(process) };
-  for (const [key, value] of Object.entries(partial)) {
-    if (value === undefined) delete layer[key];
-    else layer[key] = { value, seq: next() };
+  for (const [path, value] of Object.entries(values)) {
+    if (value === undefined) delete layer[path];
+    else layer[path] = { value, seq: next() };
   }
   return new Map(layers).set(process, layer);
 }
@@ -286,7 +296,11 @@ function registry(url: AutomergeUrl): Signal<Entry[]> {
 }
 
 function dispatch(here: Node | undefined, type: string, req: unknown, from: Node): any {
-  if (!here) throw new Error(`unhandled ${type} from ${from.url}`);
+  if (!here) {
+    const fallback = fallbacks.get(type);
+    if (fallback) return fallback(req);
+    throw new Error(`unhandled ${type} from ${from.url}`);
+  }
   const own = registry(here.url)[0]()
     .filter((e) => e.type === type)
     .map((e) => e.handler);

@@ -1,0 +1,278 @@
+:root {
+  --ink: #1d1d1f;
+  --muted: #8a857c;
+  --paper: #ffffff;
+  --canvas: #f4f1ea;
+  --dots: #d6cfc1;
+  --chrome: #ece8e0;
+  --chrome-pressed: #ddd7cb;
+  --selected: #cfe6ff;
+  --accent: #ff6a4d;
+  --border: 1px solid var(--ink);
+  --shadow: 3px 3px 0 rgba(29, 29, 31, 0.18);
+  --shadow-small: 2px 2px 0 rgba(29, 29, 31, 0.18);
+  --pressed: inset 2px 2px 0 rgba(29, 29, 31, 0.14);
+  --radius: 7px;
+  --font: ui-rounded, "SF Pro Rounded", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font: 13px/1.4 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* the canvas only positions shapes; what a shape draws is up to it */
+
+.canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  background-color: var(--canvas);
+  background-image: radial-gradient(var(--dots) 1px, transparent 1.3px);
+  background-size: 22px 22px;
+}
+
+.shape {
+  position: absolute;
+}
+
+/* sits at the bottom and catches whatever no other shape takes */
+.pointer-layer {
+  position: absolute;
+  inset: -100vmax;
+}
+
+.cursor {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin: -5px 0 0 -5px;
+  border: 1px solid var(--ink);
+  border-radius: 50%;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.line {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* windows */
+
+.panel {
+  box-sizing: border-box;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--paper);
+  border: var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  font: 12px/1.4 var(--font);
+  color: var(--ink);
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 5px 5px;
+  background: var(--chrome);
+  border-bottom: var(--border);
+  font-weight: 700;
+}
+
+.titlebar:not(:has(.btn)) {
+  padding-left: 10px;
+}
+
+/* the classic striped drag area, filling what the title leaves */
+.titlebar .grip {
+  flex: 1;
+  height: 9px;
+  background: repeating-linear-gradient(to bottom, var(--ink) 0 1px, transparent 1px 3px);
+  opacity: 0.22;
+}
+
+.pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pane + .pane {
+  border-top: var(--border);
+}
+
+.pane h4 {
+  margin: 0;
+  padding: 7px 10px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.scroll {
+  flex: 1;
+  overflow: auto;
+  padding: 0 6px 8px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.empty {
+  margin: 4px;
+  color: var(--muted);
+}
+
+/* buttons */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 11px;
+  font: 700 12px var(--font);
+  color: var(--ink);
+  background: var(--paper);
+  border: var(--border);
+  border-radius: 6px;
+  box-shadow: var(--shadow-small);
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--chrome);
+}
+
+.btn:active,
+.btn.active {
+  background: var(--chrome-pressed);
+  box-shadow: var(--pressed);
+  transform: translate(1px, 1px);
+}
+
+.btn.active {
+  background: var(--selected);
+}
+
+.btn.icon {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border-radius: 5px;
+}
+
+/* hierarchy */
+
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.row:hover {
+  background: var(--chrome);
+}
+
+.row.selected {
+  background: var(--selected);
+  box-shadow: inset 0 0 0 1px var(--ink);
+}
+
+.row .key {
+  color: var(--muted);
+}
+
+/* data */
+
+.fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  padding: 2px 4px;
+}
+
+.fields .key {
+  font-weight: 700;
+}
+
+.fields .value {
+  min-width: 0;
+  font: 11px/1.45 var(--mono);
+  word-break: break-all;
+}
+
+/* a put on top of the stored value */
+.put {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 5px;
+  vertical-align: 1px;
+  border: 1px solid var(--ink);
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* cards and node references */
+
+.chip {
+  display: inline-block;
+  margin: 0 4px 3px 0;
+  padding: 0 7px;
+  font: 600 11px/18px var(--font);
+  color: var(--ink);
+  background: var(--chip, var(--chrome));
+  border: var(--border);
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+button.chip {
+  cursor: pointer;
+}
+
+button.chip:hover {
+  box-shadow: var(--shadow-small);
+}
+
+.dealt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+}
+
+.dealt .chip {
+  margin: 0;
+}
