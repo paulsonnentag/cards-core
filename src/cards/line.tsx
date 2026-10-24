@@ -1,5 +1,5 @@
-import { State, type Behavior, type Point } from "core";
-import type { Shape } from "./canvas";
+import { State, type Behavior } from "core";
+import type { Point, Shape } from "./canvas";
 
 export type Line = Shape & { points: Point[]; color: string; width: number };
 

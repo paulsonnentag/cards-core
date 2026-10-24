@@ -1,17 +1,9 @@
 import type { AutomergeUrl } from "@automerge/automerge-repo";
 import { createEffect, createMemo } from "solid-js";
-import {
-  hasTag,
-  Lookup,
-  message,
-  Node,
-  rootOf,
-  State,
-  type Behavior,
-  type Point,
-} from "core";
+import { hasTag, message, Node, rootOf, State, type Behavior } from "core";
+import { myPointer } from "container";
 import { hit, isControl } from "dom";
-import type { DropRequest, Shape } from "./canvas";
+import type { DropRequest, Point, Shape } from "./canvas";
 import type { Line } from "./line";
 import type { PointerInput } from "./pointer";
 import type { Tool } from "./tool";
@@ -30,7 +22,7 @@ export default (({ url, parent, request }) => {
   request(State).put("@tags/tool", true);
   const self = () => request(State).read<Pen>();
   const selected = () => self().selected ?? false;
-  const pointer = createMemo(() => request(Lookup, { tag: "pointer" }));
+  const pointer = createMemo(() => myPointer(parent!));
 
   createEffect(() => {
     const p = pointer();

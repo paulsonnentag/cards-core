@@ -7,24 +7,17 @@ import {
   onMount,
   type Component,
 } from "solid-js";
-import {
-  message,
-  state,
-  State,
-  type Behavior,
-  type Node,
-  type Point,
-} from "core";
-import { Child, placeIn, removeFrom } from "container";
+import { message, state, State, type Behavior, type Node } from "core";
+import { Child, myPointer, placeIn } from "container";
 import { elementOf } from "dom";
 import type {
   Container,
   DropRequest,
   PanRequest,
+  Point,
   Shape,
-  TakeRequest,
-  Taken,
 } from "./canvas";
+import type { Pointer } from "./pointer";
 
 export type Camera = { center: [lng: number, lat: number]; zoom: number };
 export type MapShape = Shape &
@@ -32,10 +25,8 @@ export type MapShape = Shape &
     width: number;
     height: number;
     camera: Camera;
-    dropping?: boolean; // put while something that would land here hovers
   };
 
-const Take = message<TakeRequest, Taken | undefined>("container/take");
 const Drop = message<DropRequest, AutomergeUrl | undefined>("container/drop");
 const Pan = message<PanRequest, void>("container/pan");
 
@@ -45,21 +36,22 @@ const TILE = 512; // MapLibre's world is 512 pixels wide at zoom 0
 // A surface on a map. Children sit at x = longitude, y = latitude; their scale is relative to the map, so they
 // arrive at the size they had on screen and then grow and shrink with it. The camera is shared: every pan and
 // zoom is written to the document.
-export default (({ url, request, on }) => {
+export default (({ url, parent, request, on }) => {
   const map = () => request(State).read<MapShape>();
   const size = () => ({ x: map().width, y: map().height });
+  // something my pointer holds would land here
+  const dropping = () => {
+    const pointer = myPointer(parent!);
+    return Boolean(pointer && state<Pointer>(pointer).grip?.over?.url === url);
+  };
 
   request(State).put({
     "@tags/surface": true,
-    view: () => <MapView map={map()} zoomAt={zoomAt} />,
+    accepts: "shape",
+    view: () => <MapView map={map()} dropping={dropping()} zoomAt={zoomAt} />,
   });
 
-  on(Drop, ({ node, client, scale, phase = "drop" }, next) => {
-    const dropping = phase === "over";
-    if (Boolean(map().dropping) !== dropping)
-      request(State).put("dropping", dropping || undefined);
-    if (phase === "out") return next();
-    if (phase === "over") return url;
+  on(Drop, ({ node, client, scale }) => {
     const [lng, lat] = fromScreen(toLocal(client), map().camera, size());
     placeIn(request(State), node, {
       x: lng,
@@ -68,10 +60,6 @@ export default (({ url, request, on }) => {
     });
     return url;
   });
-
-  on(Take, ({ node }, next) =>
-    removeFrom(request(State), node) ? { node } : next(),
-  );
 
   on(Pan, ({ delta }) => {
     const camera = map().camera;
@@ -120,6 +108,7 @@ export default (({ url, request, on }) => {
 
 const MapView: Component<{
   map: MapShape;
+  dropping: boolean;
   zoomAt(client: Point, by: number): void;
 }> = (props) => {
   let container!: HTMLDivElement;
@@ -148,10 +137,7 @@ const MapView: Component<{
   });
 
   return (
-    <div
-      class="paper map-frame"
-      classList={{ droppable: Boolean(props.map.dropping) }}
-    >
+    <div class="paper map-frame" classList={{ droppable: props.dropping }}>
       <div class="map-title">Map</div>
       <div
         class="map-gl"

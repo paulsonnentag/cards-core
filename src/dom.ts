@@ -1,5 +1,6 @@
 import type { AutomergeUrl } from "@automerge/automerge-repo";
-import { childNodes, type Node, type Point } from "./core";
+import type { Point } from "./cards/canvas";
+import { childNodes, type Node } from "./core";
 
 // the deepest node rendered at `element`, reached through state from `root`. Previews (marked data-inert) count as
 // what shows them, so nothing draws or drops into an example; pass `previews` to reach into them, e.g. to drag one out.

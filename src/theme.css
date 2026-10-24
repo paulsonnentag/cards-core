@@ -56,14 +56,17 @@ body {
   transform-origin: 0 0;
 }
 
-/* following the pointer: lifted off the canvas, see-through above a container that would take it */
-.child.dragging {
+/* what a pointer holds: lifted above everything, see-through above a container that would take it */
+.held {
+  position: absolute;
+  left: 0;
+  top: 0;
   z-index: 10;
   pointer-events: none;
   filter: drop-shadow(4px 6px 0 rgba(29, 29, 31, 0.16));
 }
 
-.child.dragging > * {
+.held > .child > * {
   transform-origin: 0 0;
   transition:
     opacity 160ms ease,
@@ -71,7 +74,7 @@ body {
   animation: lift 160ms ease-out;
 }
 
-.child.dragging.over > * {
+.held.over > .child > * {
   opacity: 0.55;
   transform: scale(0.94);
 }
@@ -85,6 +88,7 @@ body {
 
 .cursor {
   position: absolute;
+  z-index: 11; /* above what the pointer holds */
   width: 8px;
   height: 8px;
   margin: -5px 0 0 -5px;
@@ -92,6 +96,11 @@ body {
   border-radius: 50%;
   background: var(--accent);
   pointer-events: none;
+}
+
+/* someone else's */
+.cursor.remote {
+  background: var(--droppable);
 }
 
 .line {
@@ -409,16 +418,6 @@ button.chip:hover {
   transition:
     transform 160ms ease,
     box-shadow 160ms ease;
-}
-
-.deck-row.held {
-  z-index: 1;
-  border-color: var(--ink);
-  background: var(--paper);
-  box-shadow: var(--shadow-small);
-  cursor: grabbing;
-  pointer-events: none;
-  transition: none;
 }
 
 .deck-row.placeholder {

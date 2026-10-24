@@ -3,6 +3,8 @@ import {
   Repo,
   type AutomergeUrl,
 } from "@automerge/automerge-repo";
+import { BroadcastChannelNetworkAdapter } from "@automerge/automerge-repo-network-broadcastchannel";
+import { WebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 import { Dynamic, render } from "solid-js/web";
 import type { Canvas, Shape } from "./cards/canvas";
@@ -10,8 +12,10 @@ import type { Card } from "./cards/card";
 import type { Deck } from "./cards/deck";
 import type { Line } from "./cards/line";
 import type { Camera, MapShape } from "./cards/map";
+import type { User } from "./cards/pointer";
 import { backend, Node, state } from "./core";
 import { dealer } from "./dealer";
+import { presence } from "./presence";
 import "./theme.css";
 
 // only read when seeding a new canvas; after that a card's source lives in its document
@@ -21,12 +25,22 @@ const sources = import.meta.glob<string>("./cards/*.tsx", {
   eager: true,
 });
 const BERLIN: Camera = { center: [13.388, 52.517], zoom: 9.5 };
+const SYNC_SERVER =
+  import.meta.env.VITE_SYNC_SERVER ?? "wss://sync3.automerge.org";
 
-const repo = new Repo({ storage: new IndexedDBStorageAdapter() });
+// other tabs see each other directly; other browsers through the sync server
+const repo = new Repo({
+  storage: new IndexedDBStorageAdapter(),
+  network: [
+    new BroadcastChannelNetworkAdapter(),
+    new WebSocketClientAdapter(SYNC_SERVER),
+  ],
+});
 const root = new Node(canvasUrl());
 
 root.attach(backend(repo));
 root.attach(dealer);
+root.attach(presence(repo, userUrl()));
 
 render(
   () => <Dynamic component={state<Canvas>(root).view} />,
@@ -41,6 +55,19 @@ function canvasUrl(): AutomergeUrl {
 
   const url = createCanvas();
   location.hash = url;
+  return url;
+}
+
+// the user at this keyboard, with their pointer; one per tab, so two tabs are two cursors
+function userUrl(): AutomergeUrl {
+  const existing = sessionStorage.getItem("user");
+  if (isValidAutomergeUrl(existing)) return existing;
+
+  const url = create<User>({
+    "@tags": { user: true },
+    pointer: create<Shape>({ ...tags("pointer"), x: 0, y: 0 }),
+  });
+  sessionStorage.setItem("user", url);
   return url;
 }
 
@@ -71,7 +98,7 @@ function createCanvas(): AutomergeUrl {
     seed(
       "pointer",
       "Pointer",
-      "Turns presses on the canvas into pointer events. A subscriber can claim a press.",
+      "Every user's cursor, and what it holds. Yours turns presses on the canvas into pointer events; a subscriber can claim a press.",
       "pointer",
     ),
     seed(
@@ -124,7 +151,6 @@ function createCanvas(): AutomergeUrl {
     ),
   ].map((s) => card(s, { x: 0, y: 0 }));
 
-  const pointer = create<Shape>({ ...tags("pointer"), x: 0, y: 0 });
   const select = create<Shape>({
     "@tags": { shape: true, select: true, default: true },
     x: 16,
@@ -148,10 +174,9 @@ function createCanvas(): AutomergeUrl {
     children: [],
   });
 
-  // the pointer goes first so it renders underneath every other shape
   return create<Canvas>({
     "@tags": { canvas: true },
-    children: [pointer, select, pen, inspector, deck, berlin],
+    children: [select, pen, inspector, deck, berlin],
   });
 }
 

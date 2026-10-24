@@ -1,24 +1,32 @@
 import type { Component, JSX } from "solid-js";
 import { Dynamic } from "solid-js/web";
-import { state, State, type Node } from "./core";
-import type { Container, Shape } from "./cards/canvas";
+import { hasTag, rootOf, state, State, type Node } from "./core";
+import type { Canvas, Container, Shape } from "./cards/canvas";
+import type { User } from "./cards/pointer";
 
 // renders a node inside its container; data-node is how the pointer finds nodes again
 export const Child: Component<{ node: Node; style?: JSX.CSSProperties }> = (
   props,
 ) => (
-  <div
-    class="child"
-    classList={{
-      dragging: Boolean(state<Shape>(props.node).dragging),
-      over: state<Shape>(props.node).dragging === "over",
-    }}
-    data-node={props.node.url}
-    style={props.style}
-  >
+  <div class="child" data-node={props.node.url} style={props.style}>
     <Dynamic component={state<Shape>(props.node).view} />
   </div>
 );
+
+// the pointer of the user at this keyboard, as seen from anywhere in the tree
+export function myPointer(node: Node): Node | undefined {
+  const me = state<Canvas>(rootOf(node)).me;
+  return me && state<User>(me).pointer;
+}
+
+// the nearest container, from `from` up, whose `accepts` tag `node` carries
+export function taker(from: Node, node: Node): Node | undefined {
+  for (let n: Node | undefined = from; n; n = n.parent) {
+    const accepts = state<Partial<Container>>(n).accepts;
+    if (accepts && hasTag(node, accepts)) return n;
+  }
+  return undefined;
+}
 
 // adds `node` to the container's children (if it isn't there yet) and sets where it sits. With `at`, it ends up
 // at that index, counted without it, so a child already there is moved

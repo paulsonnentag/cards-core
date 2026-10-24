@@ -8,7 +8,6 @@ import {
   type Component,
 } from "solid-js";
 import {
-  Lookup,
   message,
   Node,
   rootOf,
@@ -17,6 +16,7 @@ import {
   type Behavior,
   type Tagged,
 } from "core";
+import { myPointer } from "container";
 import { hit, isControl } from "dom";
 import type { Shape } from "./canvas";
 import type { Card } from "./card";
@@ -35,7 +35,7 @@ type Inspector = Shape & Tool & { target?: Node }; // target is a put
 export default (({ url, parent, request }) => {
   request(State).put("@tags/tool", true);
   const self = () => request(State).read<Inspector>();
-  const pointer = createMemo(() => request(Lookup, { tag: "pointer" }));
+  const pointer = createMemo(() => myPointer(parent!));
   const pick = (node: Node | undefined) => request(State).put("target", node);
 
   createEffect(() => {

@@ -1,32 +1,28 @@
 import { createEffect, Show, type Component } from "solid-js";
 import { Dynamic } from "solid-js/web";
-import { message, state, State, type Behavior, type Node } from "core";
-import type { Shape, TakeRequest, Taken } from "./canvas";
+import { state, State, type Behavior, type Node } from "core";
+import type { Shape } from "./canvas";
 
 export type Card = Shape & {
   schema?: Node;
   title: string;
   description: string;
   matches: string; // the tag this card applies to
-  example?: Node; // dragged out of the card as a copy
+  example?: Node; // a template: dragged out of the card as a copy
   source: string; // TSX whose default export is the Behavior
 };
-
-const Take = message<TakeRequest, Taken | undefined>("container/take");
 
 const BOX = 140;
 
 // Renders every card: its title, its description, and an example that drags out as a copy.
-export default (({ request, on }) => {
+export default (({ request }) => {
   const card = () => request(State).read<Card>();
 
   request(State).put("view", () => <CardView card={card()} />);
 
-  // taking the example leaves it here and hands out a full-size copy
-  on(Take, ({ node }, next): Taken | undefined =>
-    node.url === card().example?.url
-      ? { node: node.request(State).clone(), scale: 1 }
-      : next(),
+  // the example is a template: the select tool leaves it here and drops a copy
+  createEffect(() =>
+    card().example?.request(State).put("@tags/template", true),
   );
 }) satisfies Behavior;
 

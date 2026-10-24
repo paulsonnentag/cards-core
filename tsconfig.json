@@ -12,7 +12,7 @@
     "skipLibCheck": true,
     "types": ["vite/client"],
     "paths": {
-      "core": ["./src/core.ts"],
+      "core": ["./src/core/index.ts"],
       "container": ["./src/container.tsx"],
       "dom": ["./src/dom.ts"]
     }

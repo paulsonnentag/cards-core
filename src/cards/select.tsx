@@ -2,25 +2,17 @@ import type { AutomergeUrl } from "@automerge/automerge-repo";
 import { batch, createEffect, createMemo } from "solid-js";
 import {
   hasTag,
-  Lookup,
   message,
   rootOf,
   state,
   State,
   type Behavior,
   type Node,
-  type Point,
 } from "core";
+import { myPointer, removeFrom, taker } from "container";
 import { elementAt, elementOf, hit } from "dom";
-import type {
-  Canvas,
-  DropRequest,
-  PanRequest,
-  Shape,
-  TakeRequest,
-  Taken,
-} from "./canvas";
-import type { PointerInput } from "./pointer";
+import type { DropRequest, PanRequest, Point, Shape } from "./canvas";
+import type { Grip, Pointer, PointerInput } from "./pointer";
 import type { Tool } from "./tool";
 
 const PointerDown = message<PointerInput, AutomergeUrl | undefined>(
@@ -29,32 +21,32 @@ const PointerDown = message<PointerInput, AutomergeUrl | undefined>(
 const PointerMove = message<PointerInput, void>("pointer/move");
 const PointerUp = message<PointerInput, void>("pointer/up");
 const Toggle = message<void, void>("tool/toggle");
-const Take = message<TakeRequest, Taken | undefined>("container/take");
 const Drop = message<DropRequest, AutomergeUrl | undefined>("container/drop");
 const Pan = message<PanRequest, void>("container/pan");
 
 const THRESHOLD = 4; // pixels before a press becomes a drag, so plain clicks still reach the shape's own UI
 
-// what's being pressed (puts); `target` is where the dragged node is now, which changes when it's lifted
+// what's being pressed (puts); once lifted, the pointer holds it
 type Press = {
-  target: Node;
+  pressed: Node;
   pan: boolean; // pressed on a surface's background: pans instead of moving
   start: Point;
   last: Point;
-  grab: Point; // where the target was grabbed, in its own pixels
-  scale: number; // the target's size on screen
-  dragging?: boolean; // past the threshold
-  over?: { from: Node; url: AutomergeUrl }; // the container that would take it, and the node it was reached from
+  grab: Point; // where `pressed` was grabbed, in its own pixels
+  scale: number; // its size on screen, once lifted: the size it's held at
+  lifted?: boolean; // past the threshold: taken from its container, in the pointer's hand
 };
 type Select = Shape & Tool & { press?: Press };
 
 // The default tool: drag anything to move it between containers, drag a surface's background to pan it.
+// A template (a card's example) is dragged as itself and dropped as a copy.
 export default (({ url, parent, request }) => {
   request(State).put("@tags/tool", true);
   const self = () => request(State).read<Select>();
   const selected = () => self().selected ?? false;
   const root = () => rootOf(parent!);
-  const pointer = createMemo(() => request(Lookup, { tag: "pointer" }));
+  const pointer = createMemo(() => myPointer(parent!));
+  const hand = () => pointer()!.request(State);
 
   createEffect(() => {
     const p = pointer();
@@ -79,8 +71,8 @@ export default (({ url, parent, request }) => {
   ));
 
   function press(e: PointerInput) {
-    const target = hit(root(), e.element, { previews: true });
-    const el = elementOf(target.url, e.element);
+    const pressed = hit(root(), e.element, { previews: true });
+    const el = elementOf(pressed.url, e.element);
     const rect = el?.getBoundingClientRect();
     const scale = el && el.offsetWidth ? rect!.width / el.offsetWidth : 1;
     const grab = rect
@@ -93,7 +85,7 @@ export default (({ url, parent, request }) => {
       e.element.closest("[data-pan], [data-node]")?.hasAttribute("data-pan"),
     );
     request(State).put("press", {
-      target,
+      pressed,
       pan,
       start: e.client,
       last: e.client,
@@ -106,106 +98,70 @@ export default (({ url, parent, request }) => {
     const p = self().press;
     if (!p) return;
     if (p.pan) {
-      p.target.request(Pan, {
+      p.pressed.request(Pan, {
         delta: { x: e.client.x - p.last.x, y: e.client.y - p.last.y },
       });
       request(State).put("press", { ...p, last: e.client });
       return;
     }
-    if (
-      !p.dragging &&
-      (distance(p.start, e.client) < THRESHOLD || p.target.url === root().url)
-    )
-      return;
-    // one step for the dealer: a card that changes containers mustn't look gone in between
-    batch(() => drag(p, e.client));
+    if (!p.lifted) {
+      if (distance(p.start, e.client) < THRESHOLD) return;
+      if (p.pressed.url === root().url) return;
+      lift(p);
+    }
+    follow(self().press!, e.client);
   }
 
-  // asks what's under the pointer who would take the target, and lets that container show it. The target stays
-  // where it is while its own container would keep it, unless that is a surface; otherwise it's lifted onto the
-  // root, so it can follow the pointer anywhere
-  function drag(p: Press, client: Point) {
-    const under = hit(root(), elementAt(client, p.target.url) ?? null);
-    const send = (from: Node, phase: DropRequest["phase"]) =>
-      from.request(Drop, {
-        node: p.target,
-        client: originAt(client, p),
-        pointer: client,
-        scale: p.scale,
-        phase,
-      });
-    let accepted = send(under, "over");
-    if (p.over && p.over.url !== accepted) {
-      send(p.over.from, "out");
-      accepted = send(under, "over"); // "out" passes by every container up the way, including this one
-    }
-
-    let { target, scale } = p;
-    const parent = target.parent!;
-    const kept = accepted === parent.url && !hasTag(parent, "surface");
-    if (parent.url !== root().url && !kept) {
-      const taken = target.request(Take, { node: target });
-      if (!taken) return;
-      scale = taken.scale ?? scale;
-      root().request(Drop, {
-        node: taken.node,
-        client: originAt(client, { grab: p.grab, scale }),
-        scale,
-      });
-      target = state<Canvas>(root()).children.find(
-        (c) => c.url === taken.node.url,
-      )!;
-    }
-    if (target.parent?.url === root().url) {
-      const origin = originAt(client, { grab: p.grab, scale });
-      const surface = elementOf(root().url)!.getBoundingClientRect();
-      const dragging = accepted && accepted !== root().url ? "over" : true;
-      target.request(State).put({
-        x: origin.x - surface.left,
-        y: origin.y - surface.top,
-        dragging,
-      });
-    }
-    const over = accepted ? { from: under, url: accepted } : undefined;
-    request(State).put("press", {
+  // takes the pressed node out of its container and puts it in the pointer's hand; a template stays where it
+  // is and is held as itself, at full size
+  function lift(p: Press) {
+    const template = hasTag(p.pressed, "template");
+    const lifted: Press = {
       ...p,
-      target,
-      scale,
-      dragging: true,
-      last: client,
-      over,
-    } satisfies Press);
+      lifted: true,
+      scale: template ? 1 : p.scale,
+    };
+    batch(() => {
+      if (!template) removeFrom(p.pressed.parent!.request(State), p.pressed);
+      hand().put({ holding: p.pressed.url, grip: grip(lifted) });
+      request(State).put("press", lifted);
+    });
   }
 
-  // ends the drag over whatever is under the pointer; the first container up from there that accepts gets it
+  // tells the pointer which container would take what it holds, so that container and the held node can show it
+  function follow(p: Press, client: Point) {
+    const under = hit(root(), elementAt(client, p.pressed.url) ?? null);
+    hand().put("grip", grip(p, taker(under, p.pressed)));
+  }
+
+  // hands what the pointer holds to the container under it; the root canvas takes anything, so it always lands
   function release(e: PointerInput) {
     const p = self().press;
     request(State).put("press", undefined);
-    if (!p?.dragging) return;
-    const target = p.target;
-    const under = hit(root(), elementAt(e.client, target.url) ?? null);
-    const send = (from: Node, phase: DropRequest["phase"]) =>
-      from.request(Drop, {
-        node: target,
+    if (!p?.lifted) return;
+    const over = state<Pointer>(pointer()!).grip?.over ?? root();
+    const node = hasTag(p.pressed, "template")
+      ? p.pressed.request(State).clone()
+      : p.pressed;
+    batch(() => {
+      hand().put({ holding: undefined, grip: undefined });
+      over.request(Drop, {
+        node,
         client: originAt(e.client, p),
         pointer: e.client,
         scale: p.scale,
-        phase,
       });
-    batch(() => {
-      if (p.over) send(p.over.from, "out");
-      target
-        .request(State)
-        .put({ x: undefined, y: undefined, dragging: undefined });
-      const accepted = send(under, "drop");
-      if (accepted && accepted !== target.parent?.url)
-        target.request(Take, { node: target });
     });
     swallowClick();
   }
 }) satisfies Behavior;
 
-// where the dragged node's top-left goes when the pointer is at `client`
+// a grip as it is put: the container is stored by url and read back as a node
+function grip(p: Press, over?: Node): Record<keyof Grip, unknown> {
+  return { grab: p.grab, scale: p.scale, over: over?.url };
+}
+
+// where the held node's top-left goes when the pointer is at `client`
 function originAt(client: Point, p: Pick<Press, "grab" | "scale">): Point {
   return { x: client.x - p.grab.x * p.scale, y: client.y - p.grab.y * p.scale };
 }

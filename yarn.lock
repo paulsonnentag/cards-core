@@ -2,6 +2,24 @@
 # yarn lockfile v1
 
 
+"@automerge/automerge-repo-network-broadcastchannel@2.6.0-alpha.3":
+  version "2.6.0-alpha.3"
+  resolved "https://registry.yarnpkg.com/@automerge/automerge-repo-network-broadcastchannel/-/automerge-repo-network-broadcastchannel-2.6.0-alpha.3.tgz#def1c5f32a577a4e031bf8461771cf9fd4d22ab1"
+  integrity sha512-2CbGnBzeAqHkZDHMRX+ynfyJnvg4bg9L6zsvPtGYem6TyhMG5dKhR8wvrhaKy7xFMTvKCDl4Xz+bQU+Hf9qI3A==
+  dependencies:
+    "@automerge/automerge-repo" "2.6.0-alpha.3"
+
+"@automerge/automerge-repo-network-websocket@2.6.0-alpha.3":
+  version "2.6.0-alpha.3"
+  resolved "https://registry.yarnpkg.com/@automerge/automerge-repo-network-websocket/-/automerge-repo-network-websocket-2.6.0-alpha.3.tgz#d514d19c5004f9d43fd736fd7fd91d1874c570bb"
+  integrity sha512-8iY+aQm0IZfKjwqFAEmwJLT/QP0izwq/F45mtX0L6Bl+JQ0p9ouJcqYwFyhWItlb7vor3NKMb/yp3NCGmy5A4w==
+  dependencies:
+    "@automerge/automerge-repo" "2.6.0-alpha.3"
+    cbor-x "^1.6.4"
+    debug "^4.4.3"
+    eventemitter3 "^5.0.4"
+    ws "^8.21.0"
+
 "@automerge/automerge-repo-storage-indexeddb@2.6.0-alpha.3":
   version "2.6.0-alpha.3"
   resolved "https://registry.yarnpkg.com/@automerge/automerge-repo-storage-indexeddb/-/automerge-repo-storage-indexeddb-2.6.0-alpha.3.tgz#a960f14acafe2d69f1675f73e156103cc37583a1"
@@ -1130,6 +1148,11 @@ vitefu@^1.0.4:
   version "1.1.3"
   resolved "https://registry.yarnpkg.com/vitefu/-/vitefu-1.1.3.tgz#59b9885b1c200856319d7e9ceb0e99a065430009"
   integrity sha512-ub4okH7Z5KLjb6hDyjqrGXqWtWvoYdU3IGm/NorpgHncKoLTCfRIbvlhBm7r0YstIaQRYlp4yEbFqDcKSzXSSg==
+
+ws@^8.21.0:
+  version "8.22.0"
+  resolved "https://registry.yarnpkg.com/ws/-/ws-8.22.0.tgz#40f16e1d7588ac0575041be5c49b8eb261c28e73"
+  integrity sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==
 
 xstate@^5.32.4:
   version "5.33.3"
