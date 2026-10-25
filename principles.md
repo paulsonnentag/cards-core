@@ -1,6 +1,6 @@
 # Messages and behaviors
 
-Principles for writing cards, taken from the refactors that removed the container helpers and the dom library. Paths point at examples in `cards-packages`. They are illustrations, not the shape every environment has to take: a space could be a canvas of shapes, a text editor, or something with no spatial layout at all.
+Principles for writing cards. Paths point at examples in `cards-packages`; they illustrate a principle, not the shape every environment has to take. A space could be a canvas of shapes, a text editor, or something with no spatial layout at all.
 
 A **behavior** is the code the dealer attaches to every node with a card's tag. A **message** is a typed name that behaviors send and handle. A package exports **contracts** (types, tags, messages) and card descriptors.
 
@@ -8,21 +8,21 @@ A **behavior** is the code the dealer attaches to every node with a card's tag. 
 
 **Share contracts, not functions.** A package may export types, tags, messages and descriptors. It may not export a function that reads or writes a document or walks the tree: two packages pinned at different versions would run two versions of the same protocol. A pure helper with no document state, like `View` and `Child` in `@cards/core/render`, belongs in the environment, alongside `solid-js`.
 
-**Local helpers are fine.** A function that only one card uses stays in that card's file, even if it walks the tree. `surfaceOf` in `lines/src/pen.tsx` and `dropTarget` in `tools/src/select.tsx` are examples. If a second card needs the same function, look at who owns the data (next section) before you move the function into a shared package.
+**Local helpers are fine.** A function that only one card uses stays in that card's file, even if it walks the tree. `surfaceOf` in `lines/src/pen.tsx` and `dropTarget` in `tools/src/select.tsx` are examples. If a second card needs the same function, ask who owns the data before you look for a way to share it.
 
 ## Ownership
 
-**The owner of the data handles the change.** Don't write a shared function that edits someone else's document. Send a message to the node that owns the document and let it change its own data. Every container handles `Drop` by adding to its own `children`, so nobody else needs to know how it stores them (`shapes/src/canvas.tsx`, `deck/src/deck.tsx`, `map/src/map.tsx`).
+**The owner of the data handles the change.** Don't edit someone else's document. Send a message to the node that owns it and let it change its own data. Every container handles `Drop` by adding to its own `children`, so nobody else needs to know how it stores them (`shapes/src/canvas.tsx`, `deck/src/deck.tsx`, `map/src/map.tsx`).
 
-**A message is for behavior that differs between receivers.** `Drop` is a message because a canvas, a deck and a map each turn a screen point into their own terms. Moving a node into `children` would be the same code everywhere, so it was never a message. The `Place`, `Remove` and `Taker` messages collapsed into one `Drop`, and a lot of messages is usually a sign that this went wrong.
+**A message is for behavior that differs between receivers.** `Drop` is a message because a canvas, a deck and a map each turn a screen point into their own terms. If every receiver would run the same code, it isn't a message. Keep the number of messages small: each one should name an interaction, not a step of one.
 
-**Prefer data to a question.** If every receiver would answer a message the same way, the answer is a field. A container declares what it accepts with a `takes` field instead of answering a `Taker` message, and `children` is plain data that any walk can read.
+**Prefer data to a question.** If every receiver would answer a message the same way, the answer is a field. A container says what it accepts with a `takes` field, and `children` is plain data that any walk can read.
 
-**One place for each change.** A node is added to a container only by that container's `Drop` handler. It leaves a container only when the tool that moves it lifts it (`takeOut` in `tools/src/select.tsx`). When two cards could do the same edit, pick one owner.
+**One place for each change.** A node is added to a container only by that container's `Drop` handler. It leaves a container only when the tool that moves it lifts it (`takeOut` in `tools/src/select.tsx`). When two cards could make the same edit, give it one owner.
 
 ## The environment boundary
 
-**One card reads the outside world, and translates it.** Something has to turn raw input (DOM events, key presses, selections) into nodes. Keep that in one card, and have it speak the node vocabulary: URLs, points, plain data. Here that card is the pointer (`tools/src/pointer.tsx`): it is the only code that looks at the page as a whole, and it reports the URL of the node under the cursor. A text editor would have the same kind of card for keyboard input and selection.
+**One card reads the outside world, and translates it.** Something has to turn raw input (DOM events, key presses, selections) into nodes. Keep that in one card, and have it speak the node vocabulary: URLs, points, plain data. The pointer (`tools/src/pointer.tsx`) is the only code that looks at the page as a whole, and it reports the URL of the node under the cursor. A text editor would have the same kind of card for keyboard input and selection.
 
 **Everyone else measures only what they render.** A card reads its own elements through refs, never by querying the page. The deck finds a row through its own `rows` ref, and the map converts a point through its own frame.
 
@@ -39,9 +39,9 @@ A **behavior** is the code the dealer attaches to every node with a card's tag. 
 - A card that wants every press puts a standing claim on the pointer (`claimedBy`, used by `tools/src/inspector.tsx`).
 - A view that keeps an event uses the platform's own convention. The map calls `preventDefault`.
 
-**Claim late.** Take ownership only once the input is unambiguously yours. The select tool and the pen claim on the first real move, so a click still reaches the button under it. This removed the `isControl` heuristic: nobody had to guess what counts as a control.
+**Claim late.** Take ownership only once the input is unambiguously yours. The select tool and the pen claim on the first real move, so a click still reaches the button under it, and nobody has to guess what counts as a control.
 
-**Depend on a tag directly rather than add a generic message.** If one card needs to know about another, look the other card up by its tag. The map finds the select tool with `Lookup` and pans only while it's selected. That replaced a `Pan` message that only the map ever handled.
+**Depend on a tag directly rather than add a generic message.** If one card needs to know about another, look the other card up by its tag. The map finds the select tool with `Lookup` and pans only while it's selected. A message that only one card would ever handle is a dependency in disguise.
 
 **Declare what you handle; send freely.** A descriptor's `accepts` lists every message its behavior registers a handler for, on any node. Sending isn't restricted.
 
@@ -55,4 +55,4 @@ A **behavior** is the code the dealer attaches to every node with a card's tag. 
 
 ## Before adding something
 
-If a design needs a special case, such as a marker attribute, a flag on an event, or a helper for one caller, first look for a version where it isn't needed. `data-pan`, `data-inert`, `isControl` and the whole dom library went away once each piece of data had a clear owner and claims became generic.
+If a design needs a special case, such as a marker attribute, a flag on an event, or a helper for one caller, look for a version where it isn't needed. Usually it disappears once each piece of data has a clear owner and arbitration is generic.
