@@ -9,6 +9,7 @@ import type { Canvas } from "./cards/canvas";
 import {
   childNodes,
   Node,
+  nodeIn,
   state,
   State,
   whenReady,
@@ -141,9 +142,9 @@ export function presence(repo: Repo, me: AutomergeUrl): Behavior {
       root.request(State).put("present", [...new Set(peers.values())]);
     }
 
-    // a node by url, asking the root's backend like any child would
+    // a node by url in my scope; it reaches the backend through the root even before its user is listed
     function nodeFor(url: AutomergeUrl): Node {
-      return new Node(url, root, root.process, root.owner);
+      return nodeIn(root.scope, url);
     }
   };
 }

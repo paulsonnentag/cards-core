@@ -14,14 +14,17 @@ export type Tool = Tagged & { selected?: boolean }; // put by the tool card
 export type Selection = Tagged & { tool?: Node }; // tool is a put
 
 // sent by a tool to its own node to select or deselect itself
-const Toggle = message<void, void>("tool/toggle", () => {});
+const Toggle = message<void, void>("tool/toggle");
 
 // Applied to anything tagged `tool`: keeps `selected` put on the node, from the shared selection object.
 // A tool tagged `default` is selected whenever no other tool is. Tools only act while they sit on a surface,
 // so the examples inside cards stay inert.
-export default (({ url, parent, request, on }) => {
+export default ((node) => {
+  const { url, request, on } = node;
   const selection = createMemo(() => request(Lookup, { tag: "selection" }));
-  const onSurface = () => Boolean(parent && hasTag(parent, "surface"));
+  // read live: a tool dragged off a surface stops acting
+  const onSurface = () =>
+    Boolean(node.parent && hasTag(node.parent, "surface"));
   const isDefault = () =>
     Boolean(request(State).read<Partial<Tagged>>()["@tags"]?.default);
 

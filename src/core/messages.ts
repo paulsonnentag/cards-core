@@ -10,27 +10,19 @@ export type Handler<Req, Res> = (
 ) => Res;
 export type Entry = { type: string; handler: Handler<any, any> };
 
-// `fallback` answers when no handler does, e.g. events nobody subscribed to
-export function message<Req, Res>(
-  type: string,
-  fallback?: (req: Req) => Res,
-): Message<Req, Res> {
-  if (fallback) fallbacks.set(type, fallback);
+export function message<Req, Res>(type: string): Message<Req, Res> {
   return type as Message<Req, Res>;
 }
 
-// `here`'s handlers (newest first), then its ancestors', then the message's fallback
+// `here`'s handlers (newest first), then its ancestors'; undefined if none answers. A node that hangs from
+// nothing still reaches its scope's root, so what isn't placed yet can ask the backend for its state
 export function dispatch(
   here: Node | undefined,
   type: string,
   req: unknown,
   from: Node,
 ): any {
-  if (!here) {
-    const fallback = fallbacks.get(type);
-    if (fallback) return fallback(req);
-    throw new Error(`unhandled ${type} from ${from.url}`);
-  }
+  if (!here) return undefined;
   const own = registry(here.url)[0]()
     .filter((e) => e.type === type)
     .map((e) => e.handler);
@@ -38,8 +30,13 @@ export function dispatch(
 
   function run(i: number, r: unknown): any {
     if (i < own.length) return own[i](r, (next = r) => run(i + 1, next), from);
-    return dispatch(here!.parent, type, r, from);
+    return dispatch(up(here!), type, r, from);
   }
+}
+
+function up(node: Node): Node | undefined {
+  const root = node.scope.root;
+  return node.parent ?? (root && root.url !== node.url ? root : undefined);
 }
 
 // the handlers registered on a node, by url
@@ -49,5 +46,4 @@ export function registry(url: AutomergeUrl): Signal<Entry[]> {
   );
 }
 
-const fallbacks = new Map<string, (req: any) => any>();
 const handlers = new Map<AutomergeUrl, Signal<Entry[]>>();

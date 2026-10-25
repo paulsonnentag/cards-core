@@ -66,6 +66,7 @@ body {
   filter: drop-shadow(4px 6px 0 rgba(29, 29, 31, 0.16));
 }
 
+/* the view starts matching when its element moves into the hand, which is what plays the lift */
 .held > .child > * {
   transform-origin: 0 0;
   transition:

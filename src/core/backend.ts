@@ -7,18 +7,20 @@ import {
   type Repo,
 } from "@automerge/automerge-repo";
 import {
+  createComputed,
   createSignal,
   onCleanup,
   runWithOwner,
   untrack,
   type Signal,
 } from "solid-js";
-import { Node, takeFresh, type Behavior, type Process } from "./node";
+import { Node, nodeIn, takeFresh, type Behavior, type Process } from "./node";
 import { applyPuts, overlays, withPut, without, type Layers } from "./puts";
 import { State } from "./state";
-import { childNodes, hasTag, Lookup, rootOf } from "./tree";
+import { childNodes, hasTag, Lookup, rootOf, walk } from "./tree";
 
-// Attached to the root: answers State and Lookup for every node, from documents in `repo` and puts in memory.
+// Attached to the root: answers State and Lookup for every node, from documents in `repo` and puts in memory,
+// and keeps every node's `parent` current from what the documents reference.
 export function backend(repo: Repo): Behavior {
   const docs = new Map<AutomergeUrl, Stored>();
   const layers = new Map<AutomergeUrl, Signal<Layers>>();
@@ -42,8 +44,14 @@ export function backend(repo: Repo): Behavior {
         const all = overlays(docOf(from.url).read(), layersOf(from.url)[0]());
         return path === undefined ? all : all[path];
       }) as State["overlays"],
-      clone: () =>
-        Node.create(structuredClone(untrack(() => docOf(from.url).read()))),
+      // a real document at once, so it can be held and rendered before anything places it
+      clone: () => {
+        const handle = repo.create(
+          structuredClone(untrack(() => docOf(from.url).read())),
+        );
+        docs.set(handle.url, track(handle));
+        return nodeIn(from.scope, handle.url);
+      },
     }));
 
     root.on(Lookup, ({ tag, orCreate }, _, from) => {
@@ -57,8 +65,11 @@ export function backend(repo: Repo): Behavior {
         if (!d.objects) d.objects = [];
         d.objects.push(created);
       });
-      return childOf(top, created.url);
+      return nodeIn(top.scope, created.url);
     });
+
+    // keeps every node's parent current, whether or not anything else walks the tree
+    createComputed(() => walk(root));
   };
 
   function find(from: Node, tag: string): Node | undefined {
@@ -173,26 +184,13 @@ export function whenReady(
   query.subscribe(check);
 }
 
-// urls read through `parent` become nodes under it, stable per parent so views keep their identity
-const children = new WeakMap<Node, Map<AutomergeUrl, Node>>();
-
-function hydrate(value: unknown, parent: Node): any {
+// urls read by `from` become nodes in its scope
+function hydrate(value: unknown, from: Node): any {
   if (typeof value === "string")
-    return isValidAutomergeUrl(value) ? childOf(parent, value) : value;
+    return isValidAutomergeUrl(value) ? nodeIn(from.scope, value) : value;
   if (value === null || typeof value !== "object" || value instanceof Node)
     return value;
   return new Proxy(value, {
-    get: (t, k) => hydrate(Reflect.get(t, k), parent),
+    get: (t, k) => hydrate(Reflect.get(t, k), from),
   });
-}
-
-function childOf(parent: Node, url: AutomergeUrl): Node {
-  const known =
-    children.get(parent) ?? children.set(parent, new Map()).get(parent)!;
-  return (
-    known.get(url) ??
-    known
-      .set(url, new Node(url, parent, parent.process, parent.owner))
-      .get(url)!
-  );
 }

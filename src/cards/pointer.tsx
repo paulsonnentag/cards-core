@@ -2,6 +2,7 @@ import type { AutomergeUrl } from "@automerge/automerge-repo";
 import {
   createEffect,
   createMemo,
+  createSignal,
   onCleanup,
   Show,
   type Component,
@@ -31,6 +32,9 @@ export type Grip = {
   scale: number; // its size on screen
   over?: Node; // the container that would take it
 };
+type Carried = { node: Node; grip: Grip }; // what the hand shows
+
+const ARRIVAL = 500; // how long a hand keeps showing what someone else dropped, if it doesn't arrive
 // `element` is what was pressed; resolve it with `hit` from your own root so the node is bound to your process
 export type PointerInput = {
   client: Point;
@@ -43,10 +47,9 @@ export type PointerInput = {
 // moves and ups carry claimedBy, and everyone else should just call next().
 const PointerDown = message<PointerInput, AutomergeUrl | undefined>(
   "pointer/down",
-  () => undefined,
 );
-const PointerMove = message<PointerInput, void>("pointer/move", () => {});
-const PointerUp = message<PointerInput, void>("pointer/up", () => {});
+const PointerMove = message<PointerInput, void>("pointer/move");
+const PointerUp = message<PointerInput, void>("pointer/up");
 
 // Listens on the whole surface it sits on, so presses on shapes reach subscribers too. After a press it follows
 // the window rather than capturing the pointer, so buttons still get their clicks. Other users' pointers only
@@ -56,14 +59,35 @@ export default (({ url, parent, request }) => {
   // a memo, so the view only re-listens when this really changes, not on every put at the root
   const mine = createMemo(() => myPointer(parent!)?.url === url);
   let pressed = false;
+  // Someone else's drop reaches this tab in two parts: their hand empties (presence), then the node arrives where
+  // it was dropped (a document sync). Until it arrives, or for a moment if it never does, the hand keeps showing it
+  const [waited, setWaited] = createSignal(false);
+  const carried = createMemo<Carried | undefined>((last) => {
+    const { holding, grip } = self();
+    if (holding && grip) {
+      setWaited(false);
+      return { node: holding, grip };
+    }
+    if (!last || mine() || waited()) return undefined;
+    const arrived = last.node.parent;
+    if (arrived && arrived.url !== url) return undefined;
+    setTimeout(() => setWaited(true), ARRIVAL);
+    return last;
+  });
   // held above a container that would take it, other than the canvas itself
   const over = () => {
-    const target = self().grip?.over;
+    const target = carried()?.grip.over;
     return Boolean(target && target.url !== rootOf(parent!).url);
   };
 
   request(State).put("view", () => (
-    <PointerView self={self()} mine={mine()} over={over()} listen={listen} />
+    <PointerView
+      self={self()}
+      carried={carried()}
+      mine={mine()}
+      over={over()}
+      listen={listen}
+    />
   ));
 
   function listen(surface: HTMLElement) {
@@ -109,6 +133,7 @@ export default (({ url, parent, request }) => {
 
 const PointerView: Component<{
   self: Pointer;
+  carried?: Carried;
   mine: boolean;
   over: boolean;
   listen(surface: HTMLElement): void;
@@ -128,11 +153,11 @@ const PointerView: Component<{
       <Show when={props.self.position}>
         {(position) => (
           <>
-            <Show when={props.self.holding && props.self.grip}>
-              {(grip) => {
+            <Show when={props.carried}>
+              {(carried) => {
                 const origin = () => {
                   const p = at(position());
-                  const g = grip();
+                  const g = carried().grip;
                   return {
                     x: p.x - g.grab.x * g.scale,
                     y: p.y - g.grab.y * g.scale,
@@ -141,11 +166,11 @@ const PointerView: Component<{
                 return (
                   <div class="held" classList={{ over: props.over }}>
                     <Child
-                      node={props.self.holding!}
+                      node={carried().node}
                       style={{
                         left: `${origin().x}px`,
                         top: `${origin().y}px`,
-                        transform: `scale(${grip().scale})`,
+                        transform: `scale(${carried().grip.scale})`,
                       }}
                     />
                   </div>

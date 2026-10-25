@@ -1,5 +1,6 @@
+import type { AutomergeUrl } from "@automerge/automerge-repo";
 import { message } from "./messages";
-import { Node } from "./node";
+import { Node, setParents } from "./node";
 import { state } from "./state";
 
 export type Tagged = { "@tags": Record<string, true> };
@@ -29,4 +30,25 @@ export function childNodes(node: Node): Node[] {
       if (v instanceof Node) out.push(v);
   }
   return out;
+}
+
+// every node reachable from the root through node values in state, each once, first path wins. Walking also
+// records where each node sits, which is what `parent` answers from; so whoever walks first, the parents are
+// right for what they do next
+export function walk(root: Node): Node[] {
+  const parents = new Map<AutomergeUrl, AutomergeUrl | undefined>([
+    [root.url, undefined],
+  ]);
+  const nodes: Node[] = [];
+  const queue = [root];
+  for (let node = queue.shift(); node; node = queue.shift()) {
+    nodes.push(node);
+    for (const child of childNodes(node)) {
+      if (parents.has(child.url)) continue;
+      parents.set(child.url, node.url);
+      queue.push(child);
+    }
+  }
+  setParents(parents);
+  return nodes;
 }

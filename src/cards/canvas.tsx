@@ -17,7 +17,7 @@ export type Shape = Tagged & {
   x: number;
   y: number;
   scale?: number;
-  view?: Component;
+  view?: Component; // put
 };
 export type Container = Tagged & {
   children: Node[]; // urls in the document, nodes when read
@@ -41,12 +41,7 @@ export type DropRequest = {
 };
 export type PanRequest = { delta: Point };
 
-// whoever has nothing to say answers with the fallback
-const Drop = message<DropRequest, Node["url"] | undefined>(
-  "container/drop",
-  () => undefined,
-);
-message<PanRequest, void>("container/pan", () => {});
+const Drop = message<DropRequest, Node["url"] | undefined>("container/drop");
 
 // A surface in plain pixels: x and y are offsets from its top-left, scale is the size on screen.
 export default (({ url, request, on }) => {

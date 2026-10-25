@@ -1,6 +1,6 @@
 import { createEffect, Show, type Component } from "solid-js";
-import { Dynamic } from "solid-js/web";
 import { state, State, type Behavior, type Node } from "core";
+import { View } from "container";
 import type { Shape } from "./canvas";
 
 export type Card = Shape & {
@@ -52,9 +52,11 @@ const Preview: Component<{ example: Node }> = (props) => {
   });
 
   return (
-    <div class="example-content" data-node={props.example.url} ref={content}>
-      <Dynamic component={state<Shape>(props.example).view} />
-    </div>
+    <View
+      class="example-content"
+      node={props.example}
+      ref={(el) => (content = el)}
+    />
   );
 };
 
