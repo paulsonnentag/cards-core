@@ -18,7 +18,6 @@ export default defineConfig({
       "solid-js/store": "solid-js/store",
       "@automerge/automerge-repo": "@automerge/automerge-repo",
       "@cards/core": "@cards/core",
-      "@cards/core/dom": "@cards/core/dom",
       "@cards/core/render": "@cards/core/render",
     }),
     packages(),
