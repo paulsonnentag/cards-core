@@ -1,0 +1,28 @@
+{
+  "name": "@cards/site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@automerge/automerge-repo": "2.6.0-subduction.47",
+    "@automerge/automerge-repo-network-broadcastchannel": "2.6.0-subduction.47",
+    "@automerge/automerge-repo-storage-indexeddb": "2.6.0-subduction.47",
+    "@automerge/automerge-subduction": "0.16.1",
+    "@cards/core": "workspace:*",
+    "@cards/loader": "workspace:*",
+    "solid-js": "^1.9.17"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vite-plugin-solid": "^2.11.14",
+    "vite-plugin-wasm": "^3.6.0"
+  }
+}

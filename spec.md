@@ -1,35 +1,35 @@
 # Packages, cards, and messages
 
-Status: proposal
-Scope: `src/core`, `src/compile.ts`, `src/dealer.ts`, `src/container.tsx`, `src/cards/*`
+Status: implemented
+Scope: `core/` and `site/` in this repository (`cards-core`), and the packages in `cards-packages`. Code loading (`loader/`) is specified separately in [loader-spec.md](loader-spec.md).
 
 ## Summary
 
-This document proposes three changes to how code is organized and shared in Cards:
+This document describes three changes to how code is organized and shared in Cards:
 
-- Split **packages** from **cards**. A package is an Automerge document that holds source files and is the unit of code and dependencies. A card is a node in the tree that activates one behavior from a package.
+- Split **packages** from **cards**. A package is an Automerge document that holds published code and is the unit of code and dependencies. A card is a node in the tree that activates one behavior from a package.
 - Share behavior only through **messages**. Helpers that read or write documents, such as `placeIn`, become messages that a card handles. Packages share types, tags, and message definitions through ordinary JavaScript imports.
-- Load package code as real ES modules through a service worker, so that a module can derive the package it belongs to from `import.meta.url`. Tags and messages are then qualified by the package URL without a compiler step or a virtual module.
+- Load package code as real ES modules through the [package loader](loader-spec.md), so that a module can derive the package it belongs to from `import.meta.url`. Tags and messages are then qualified by the package URL without a compiler step or a virtual module.
 
 A fourth, smaller change follows from the first three: a card declares which messages it accepts, and the runtime rejects handlers for anything else.
 
 ## Goals
 
 - One mechanism for sharing: imports carry contracts, messages carry behavior.
-- One definition per message and per tag. Today `Drop` is declared in five files and `PointerDown` in four, and they agree only because they spell the same string.
+- One definition per message and per tag. Before this change `Drop` was declared in five files and `PointerDown` in four, and they agreed only because they spelled the same string.
 - Tags that are owned by a package, so that two packages can both define `line` without colliding.
-- Live dependencies. When a package changes, the cards that depend on it are re-attached with the new code, as the dealer already does for a single card's source.
+- Live dependencies. When a package changes, the cards that depend on it are re-attached with the new code, as the dealer already did for a single card's source.
 - No change to the message protocol itself. `dispatch`, `on`, and `request` keep their semantics.
 
 ## Non-goals
 
-- An in-app code editor. This proposal makes one possible but doesn't include it.
-- Pinned dependency versions between packages. The design allows them later; see [Open questions](#open-questions).
-- Moving the Automerge repo into a shared worker. The service worker design permits it, but the first implementation answers requests from the tab.
+- An in-app code editor. This design makes one possible but doesn't include it.
+- Pinned dependency versions at run time. The lockfile pins what a package is type-checked against; the page always runs the latest version of every package. See [Open questions](#open-questions).
+- Moving the Automerge repo into a shared worker. The service worker design permits it, but the responder runs in the tab.
 
 ## Background
 
-Cards are stored as documents whose `source` field is TSX. The dealer compiles that source with Babel in the browser and attaches the resulting behavior to every node that carries the card's `matches` tag. A card can import from a fixed set of host modules (`compile.ts`):
+Cards were stored as documents whose `source` field was TSX. The dealer compiled that source with Babel in the browser and attached the resulting behavior to every node that carried the card's `matches` tag. A card could import from a fixed set of host modules (`compile.ts`):
 
 ```ts
 const modules = {
@@ -43,20 +43,20 @@ const modules = {
 };
 ```
 
-This leads to two splits that are hard to reason about:
+This led to two splits that were hard to reason about:
 
-1. **Behavior is shared two ways.** `container.tsx` exports `placeIn`, `removeFrom`, `taker`, and `myPointer`. These functions read and write documents and walk the tree, so they are the container protocol in function form, while `Drop` and `Pan` are the same protocol in message form. `taker` is the `dispatch` ancestor walk written by hand.
-2. **Contracts are defined in cards but can't be imported from them.** `Shape`, `Container`, `DropRequest`, and `PointerInput` live in card files. The host imports them as types, but a card can't import another card at run time, so every card re-declares the message constants it uses.
+1. **Behavior was shared two ways.** `container.tsx` exported `placeIn`, `removeFrom`, `taker`, and `myPointer`. These functions read and write documents and walk the tree, so they were the container protocol in function form, while `Drop` and `Pan` were the same protocol in message form. `taker` was the `dispatch` ancestor walk written by hand.
+2. **Contracts were defined in cards but couldn't be imported from them.** `Shape`, `Container`, `DropRequest`, and `PointerInput` lived in card files. The host imported them as types, but a card couldn't import another card at run time, so every card re-declared the message constants it used.
 
-Patchwork ([`patchwork-next`](../patchwork-next)) solves the loading half of this problem with a service worker that serves Automerge folder documents over HTTP, pins module URLs to document heads, and uses an import map for host libraries. This proposal adopts that approach.
+Patchwork ([`patchwork-next`](../patchwork-next)) solves the loading half of this problem with a service worker that serves Automerge documents over HTTP, pins module URLs to document heads, and uses an import map for host libraries. The [package loader](loader-spec.md) adopts that approach.
 
 ## Terminology
 
 **Package**
-: An Automerge document that holds source files. The unit of code, dependencies, and tag ownership.
+: An Automerge document published from a package folder: `package.json`, `src/`, the transpiled `dist/`, and `importmap.json`. The unit of code, dependencies, and tag ownership.
 
 **Card**
-: A node in the tree that names a package and one of its card descriptors. The unit of dealing: the dealer attaches the descriptor's behavior to every node carrying the descriptor's tag.
+: A node in the tree that names one card descriptor of a package. The unit of dealing: the dealer attaches the descriptor's behavior to every node carrying the descriptor's tag.
 
 **Card descriptor**
 : An object exported by a package's entry module that describes one card: its title, the tag it matches, the messages it accepts, and its behavior.
@@ -65,38 +65,86 @@ Patchwork ([`patchwork-next`](../patchwork-next)) solves the loading half of thi
 : A string of the form `<package URL>#<name>`. Owned by the package whose URL it carries.
 
 **Message**
-: A string of the form `<package URL>#<name>`, typed with a request and a response, as `message<Req, Res>()` does today.
+: A string of the form `<package URL>#<name>`, typed with a request and a response by `message<Req, Res>()`.
 
 **Host**
-: The code bundled with the application: `core`, `dom`, the renderer, the dealer, presence, and the seed in `main.tsx`.
+: The code bundled with the application: `@cards/core`, the loader, and the site, which holds the dealer, presence, and the seed in `main.tsx`.
 
 ## Design
 
+### Repository layout
+
+Two repositories, checked out next to each other. `cards-core` (this one) is a pnpm workspace used from source:
+
+```
+loader/   @cards/loader   the package loader, its Vite plugin, the pnpm resolver, and cards-importmap
+core/     @cards/core     nodes, messages, the backend; also @cards/core/dom and @cards/core/render
+site/     @cards/site     the page: repo, loader, dealer, presence, and the seed
+```
+
+`cards-packages` is not a workspace. Each folder in it is a package on its own (`@cards/shapes`, `@cards/tools`, `@cards/lines`, `@cards/deck`, `@cards/map`) that installs, builds, and pushes by itself, so a folder can be copied out and worked on alone. Its README describes the one-time machine setup. `core` is part of the page's environment, so a package imports it under its own name and gets the page's instance.
+
 ### Packages
 
-A package is a directory document in the format Patchwork uses, so that `resolvePath` from `@inkandswitch/patchwork-filesystem` can serve it unchanged:
+A package is a folder, published as one document with pushwork:
+
+```
+shapes/
+  package.json
+  tsconfig.json            self-contained, no extends
+  babel.config.json        the Solid and TypeScript presets
+  .pushworkattributes      which files are pinned with heads
+  src/index.ts             the entry module
+  src/canvas.tsx
+  src/container.ts
+  .pushwork/config.json    the package's document URL, committed
+```
+
+`package.json` is an ordinary npm manifest. `exports["."]` names the transpiled entry, and `packageManager` pins pnpm 12. The peer dependencies are the parts of the environment it uses, `@cards/core` and `solid-js`. `@cards/core` is also a dev dependency, linked from a `cards-core` checkout (`link:../../cards-core/core`), so the package type-checks against core's source. Everything that describes cards, tags, and messages is code in the entry module.
 
 ```json
 {
-  "@patchwork": { "type": "directory" },
-  "package.json": "{ \"name\": \"shapes\", \"main\": \"index.tsx\", \"dependencies\": {} }",
-  "index.tsx": "…",
-  "canvas.tsx": "…",
-  "container.tsx": "…"
+  "name": "@cards/shapes",
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@12.15.0",
+  "exports": { ".": "./dist/index.js" },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "babel src -d dist -x .ts,.tsx --copy-files --delete-dir-on-start && tsc && cards-importmap",
+    "push": "pnpm build && pushwork sync"
+  },
+  "peerDependencies": { "@cards/core": "*", "solid-js": "*" },
+  "devDependencies": {
+    "@babel/cli": "^7.28.0",
+    "@babel/core": "^7.28.0",
+    "@babel/preset-typescript": "^7.27.0",
+    "@cards/core": "link:../../cards-core/core",
+    "babel-preset-solid": "^1.9.16",
+    "solid-js": "^1.9.17",
+    "typescript": "^7.0.2"
+  }
 }
 ```
 
-`package.json` holds only `name`, `main`, and `dependencies`. Everything that describes cards, tags, and messages is code in the entry module.
-
-The repository keeps packages as folders under `src/packages/<name>/` so that `tsc` checks them. The seed in `main.tsx` uploads each folder as one package document.
+`pnpm install` and then `pnpm push` publish a package: transpile, emit declarations, generate the import map, and sync with pushwork. See [Publishing](loader-spec.md#publishing).
 
 ### Entry module
 
 The entry module is a package's public surface. It exports types, tags, messages, and card descriptors. It does not contain behavior.
 
 ```tsx
-// src/packages/shapes/index.tsx
-import { card, message, packageUrl, tag, type Node, type Tagged } from "core";
+// packages/shapes/src/index.ts
+import {
+  card,
+  message,
+  packageUrl,
+  tag,
+  type Node,
+  type Tagged,
+} from "@cards/core";
+import type { Viewed } from "@cards/core/render";
 
 export const url = packageUrl(import.meta.url);
 
@@ -108,7 +156,7 @@ export const tags = {
 };
 
 export type Point = { x: number; y: number };
-export type Shape = Tagged & { x: number; y: number; scale?: number };
+export type Shape = Tagged & Viewed & { x: number; y: number; scale?: number };
 export type Container = Tagged & { children: Node[]; takes?: string };
 
 export type DropRequest = {
@@ -136,10 +184,10 @@ export const cards = [
     id: "container",
     title: "Container",
     description:
-      "Places, removes, and claims children for anything tagged container.",
+      "Places, removes and claims children for anything tagged container.",
     matches: tags.container,
     accepts: [Place, Remove, Taker],
-    behavior: () => import("./container.tsx"),
+    behavior: () => import("./container.js"),
   }),
   card({
     id: "canvas",
@@ -147,8 +195,8 @@ export const cards = [
     description:
       "A surface in plain pixels. Positions its children; each child draws itself.",
     matches: tags.canvas,
-    accepts: [Drop, Pan, Place],
-    behavior: () => import("./canvas.tsx"),
+    accepts: [Drop],
+    behavior: () => import("./canvas.js"),
   }),
 ];
 ```
@@ -157,33 +205,74 @@ export const cards = [
 
 ### Cards
 
-A card document names a package and a descriptor. Title, description, and tag come from the descriptor at run time, so the document stays small:
+A card document names a package and a descriptor in one string, `tag(package, id)`. Title, description, and tag come from the descriptor at run time, so the document stays small:
 
 ```ts
-type Card = Shape & {
-  package: Node; // the package document
-  card: string; // a descriptor id in that package's `cards`
+type Card = Tagged & {
+  card?: string; // `${packageUrl}#${descriptor id}`
   example?: Node; // an instance to drag out as a copy
 };
 ```
 
-The `card` card (the one that renders every card) reads the descriptor through the dealer and shows its title and description.
+The reference is a string rather than a node. A node would make the package document a child in the tree, and every walk would descend into its files. Like a tag, a URL with a fragment isn't a valid Automerge URL, so the backend leaves it a string.
+
+The `card` card (the one that renders every card) and the deck read the descriptor with `request(Describe)`, which the dealer answers at the root for the card that asks.
+
+A descriptor can make its card's example. `example` gets a node to send from and returns a new node, which the seed stores in the card document:
+
+```ts
+type CardDescriptor = {
+  …
+  example?: (node: Node) => Node;
+};
+
+card({
+  id: "deck",
+  …
+  example: ({ request }) =>
+    request(NewNode, {
+      "@tags": { [shapes.shape]: true, [tags.deck]: true },
+      x: 0,
+      y: 0,
+      children: [],
+    } satisfies Deck),
+});
+```
+
+### Creating nodes
+
+`NewNode` creates a document and answers with its node in the requester's scope. The backend answers it at the root:
+
+```ts
+const NewNode = message<Record<string, unknown>, Node>("core/new-node");
+```
+
+The document is stored at once and the change is attributed to the card that sent the message. Nodes anywhere in the initial value, inside plain objects and arrays, are stored as their URLs, so a document can be created with others nested in it:
+
+```ts
+request(NewNode, {
+  "@tags": { user: true },
+  pointer: request(NewNode, { "@tags": { … }, x: 0, y: 0 }),
+});
+```
+
+A new node has no parent until a document references it, for example after `Drop` or `d.children.push(node)` inside a change. One that is never placed stays in the repo, unreferenced. `State.clone()` and `Lookup` with `orCreate` create documents the same way.
 
 ### Tags and messages
 
 Documents store fully qualified tags. A tag such as `automerge:3RFhQ…#shape` is put at `@tags/automerge:3RFhQ…#shape`. The separator is `#` rather than `/` because `State.put` splits paths on `/`, and because a string with a fragment is not a valid Automerge URL, so `hydrate` won't turn it into a `Node`.
 
-Host-level tags that don't belong to any package stay bare: `card`, `package`. The `template` tag moves into the package that holds the select and card behaviors, because it's their protocol.
+Host-level tags that don't belong to any package stay bare: `card` and `user`. The `template` tag moves into the `tools` package, which holds the select and card behaviors, because it's their protocol.
 
 Source code never spells a qualified tag. It imports the tag from the package that owns it:
 
 ```tsx
-import { tags as shapes } from "shapes";
+import { tags as shapes } from "@cards/shapes";
 
-Node.create<Line>({
+request(NewNode, {
   "@tags": { [shapes.shape]: true, [tags.line]: true },
   …
-});
+} satisfies Line);
 ```
 
 ### Dependencies between packages
@@ -192,54 +281,36 @@ A package depends on another by listing its Automerge URL in `package.json`:
 
 ```json
 {
-  "name": "lines",
-  "main": "index.tsx",
+  "name": "@cards/lines",
   "dependencies": {
-    "shapes": "automerge:3RFhQ8vNwJmU7Ki5yX2bHdLpTcE9"
+    "@cards/shapes": "automerge:atho8JGpgB4mZnR6pP4LYffh1XT",
+    "@cards/tools": "automerge:qFzm3sVaVsAqZ3ZjdhCSNzkQoJK"
   }
 }
 ```
 
-Source imports the dependency by its alias, as it would import an npm package:
+pnpm installs it from the document through the loader's resolver, which every project on the machine gets as pnpm's `globalPnpmfile`. `tsc` checks the dependent against the dependency's published `dist/*.d.ts`, and the lockfile records the heads. What makes it a package dependency is the `automerge:` specifier, not the name; a neighbouring folder is never linked. Source imports the dependency by its alias, as it would import an npm package:
 
 ```tsx
-import { Drop, tags as shapes, type Point } from "shapes";
-import { Child } from "shapes/render.tsx";
+import { Drop, tags as shapes, type Point } from "@cards/shapes";
 ```
 
-Dependencies are live: the import resolves to whatever the dependency's document currently contains. When `shapes` changes, every package that depends on it is reloaded. This is the right default for tags and messages, because the sender and the handler must agree on the current definition, not the one the sender was compiled against.
+Dependencies are live at run time: the loader pins every package in a closure to its latest heads when it loads, and reloads when any of them changes. This is the right default for tags and messages, because the sender and the handler must agree on the current definition, not the one the sender was type-checked against.
 
-Packages must form a DAG. A cycle between packages is an error at load time. Cycles between files inside one package are allowed, with ES module semantics.
+Packages form a DAG, because a package has to be published before another package can install it.
 
 ### Loading code
 
-Package code loads as real ES modules. A service worker serves a package document at
+The dealer gets package code from the [package loader](loader-spec.md). `loader.watch(url, callback)` delivers a package's entry module and delivers it again whenever the package or anything it depends on changes. Each module is loaded natively from a pinned same-origin URL that the service worker serves from the repo.
 
-```
-https://<origin>/<encodeURIComponent(packageUrl)>/<path>
-```
+The host provides the environment, the bare specifiers every package shares with the page: `solid-js`, `solid-js/web`, `solid-js/store`, `@automerge/automerge-repo`, `@cards/core`, `@cards/core/dom`, and `@cards/core/render`. A package must use the host's instance of these, or reactivity breaks. The loader's Vite plugin emits each one as a module that re-exports the host's instance, and `createLoader` installs the import map for them. npm dependencies such as `maplibre-gl` belong to the package that uses them and load from jspm.io through that package's import map.
 
-The service worker holds no repo. When a request misses its cache, it broadcasts a handoff message on a `BroadcastChannel`, and a tab that holds the repo answers it. The tab resolves the path in the package document, compiles TSX to JavaScript, writes the response into the service worker's cache, and replies. This is the protocol in `patchwork-next/core/bootloader`; the service worker itself is repo-agnostic and can be reused.
-
-The responder does the following for each request:
-
-1. If the URL has no heads, redirect (307) to the same path with the document's current heads. The ES module map is then keyed by an exact version.
-2. Resolve the path in the package document.
-3. If the file is TSX, compile it with Babel using the Solid preset and the TypeScript preset, emitting ES modules. Don't apply `transform-modules-commonjs`; `import.meta.url` must stay a real URL.
-4. Rewrite bare imports that match a key in `dependencies` to `/<encodeURIComponent(dependencyUrl)>/`, with the dependency's `main` appended when the specifier has no subpath. Leave other bare imports for the import map.
-5. Return the result as `text/javascript`.
-
-The host provides an import map that maps `core`, `dom`, `solid-js`, `solid-js/web`, `solid-js/store`, and `maplibre-gl` to modules the host bundle emits. A package must use the host's instance of these, or reactivity breaks; the import map guarantees it.
-
-`core` exports the function that turns a module URL back into a package URL:
+`@cards/core` reads the package from the loader's pinned prefix with its own copy of `packageUrl`, so it doesn't depend on the loader:
 
 ```ts
 export function packageUrl(moduleUrl: string): AutomergeUrl {
-  const encoded = new URL(moduleUrl).pathname.split("/")[1];
-  const { documentId } = parseAutomergeUrl(
-    decodeURIComponent(encoded) as AutomergeUrl,
-  );
-  return stringifyAutomergeUrl({ documentId });
+  const [segment] = new URL(moduleUrl).pathname.split("/")[1].split("@");
+  return decodeURIComponent(segment).split("#")[0] as AutomergeUrl;
 }
 
 export function tag(pkg: AutomergeUrl, name: string): string {
@@ -251,26 +322,27 @@ Pinned URLs give each version its own module instance. Stripping the heads in `p
 
 ### Sharing behavior through messages
 
-Nothing a package can import may read or write a document or walk the tree. The helpers in `container.tsx` move as follows:
+Nothing a package can import may read or write a document or walk the tree. The helpers in `container.tsx` moved as follows:
 
-| Today                                        | Proposed                                                                         |
+| Before                                       | Now                                                                              |
 | -------------------------------------------- | -------------------------------------------------------------------------------- |
 | `placeIn(state, node, …)`                    | `request(Place, { node, fields, at })`, handled by the container card            |
 | `removeFrom(state, node)`                    | `request(Remove, { node })`, handled by the container card                       |
 | `taker(from, node)`                          | `from.request(Taker, { node })`; each container answers itself or calls `next()` |
 | `myPointer(node)`                            | `request(MyPointer)`, answered at the root by presence                           |
-| `View`, `Child`                              | Stay as imports, in a `render` module                                            |
-| `hit`, `elementOf`, `elementAt`, `isControl` | Stay as imports, in `dom`                                                        |
+| reading `me` and `present` on the root       | `request(Pointers)`, answered at the root by presence                            |
+| `View`, `Child`                              | Stay as imports, in `@cards/core/render`                                         |
+| `hit`, `elementOf`, `elementAt`, `isControl` | Stay as imports, in `@cards/core/dom`                                            |
 
-`View`, `Child`, and the `dom` helpers have no document state and no version ambiguity, so they belong with `solid-js` rather than with the protocol. The `view` field that `View` reads becomes a runtime contract owned by `render`, not a field that `canvas.tsx` happens to declare.
+`View`, `Child`, and the `dom` helpers have no document state and no version ambiguity, so they belong with `solid-js` rather than with the protocol. The `view` field that `View` reads is a runtime contract owned by `@cards/core/render` (`Viewed`), not a field that `canvas.tsx` happens to declare. `MyPointer` and `Pointers` answer with nodes in the requester's scope, so cards never read users.
 
 The container card is applied to every node tagged `container`. A canvas, a map, or a deck tags itself `container` and handles `Drop` by converting coordinates and sending `Place`:
 
 ```tsx
-// src/packages/shapes/canvas.tsx
-import { State, type Behavior } from "core";
-import { elementOf } from "dom";
-import { Drop, Place, tags } from "./index.tsx";
+// packages/shapes/src/canvas.tsx
+import { State, type Behavior } from "@cards/core";
+import { elementOf } from "@cards/core/dom";
+import { Drop, Place, tags } from "./index.js";
 
 export default (({ url, request, on }) => {
   request(State).put({
@@ -293,8 +365,8 @@ export default (({ url, request, on }) => {
 
 Two side effects of this move:
 
-- **Attribution.** Today the child's `change` inside `placeIn` is attributed to the requester. As a handler, it is attributed to the container card. This is arguably more accurate.
-- **Batching.** The select tool wraps `removeFrom` and `Drop` in one `batch`. Messages dispatch synchronously, so the batch still covers both, but the handler can't see the batch boundary.
+- **Attribution.** The child's `change` inside `placeIn` was attributed to the requester. As a handler, it is attributed to the container card. This is arguably more accurate.
+- **Batching.** The select tool wraps `Remove` and `Drop` in one `batch`. Messages dispatch synchronously, so the batch still covers both, but the handler can't see the batch boundary.
 
 The container's `accepts` field is renamed `takes` so that `accepts` is free for messages; see the next section.
 
@@ -306,12 +378,12 @@ A card descriptor lists the messages its behavior may register handlers for:
 card({
   id: "pen",
   …
-  accepts: [PointerDown, PointerMove, PointerUp, Toggle],
-  behavior: () => import("./pen.tsx"),
+  accepts: [PointerDown, PointerMove, PointerUp],
+  behavior: () => import("./pen.js"),
 });
 ```
 
-The declaration covers handlers on any node, not only the card's own node. The pen registers `PointerDown` on the pointer, so it declares `PointerDown` even though it never handles that message on itself.
+The declaration covers handlers on any node, not only the card's own node. The pen registers `PointerDown` on the pointer, so it declares `PointerDown` even though it never handles that message on itself. It sends `Toggle` and `Drop` but handles neither, so it declares neither. Sending is not restricted.
 
 Enforcement happens in `Node.on`. The dealer passes the descriptor to `attach`, and the scope records its accepted messages:
 
@@ -328,48 +400,57 @@ attach = (behavior: Behavior, card?: { url: AutomergeUrl; accepts: Message<any, 
   });
 
 on = <Req, Res>(msg: Message<Req, Res>, handler: Handler<Req, Res>): void => {
-  if (this.scope.accepts && !this.scope.accepts.has(msg))
-    throw new Error(`${this.scope.process} doesn't declare ${msg}`);
+  const { accepts, process } = this.scope;
+  if (accepts && !accepts.has(msg))
+    throw new Error(`card ${process} handles ${msg} without accepting it`);
   …
 };
 ```
 
-The dealer's existing `try`/`catch` around `attach` reports the error as a failed card. Host behaviors attach without a descriptor and are unrestricted.
+The dealer reports the error as a failed card. Host behaviors attach without a descriptor and are unrestricted.
 
-At the type level, `card()` narrows the `on` method of the node the behavior receives to the declared messages. Nodes reached through `parent`, `rootOf`, or a message response keep the unrestricted type; the runtime check covers them. Making `Node` generic in its accept list is possible later if the gap matters in practice.
+The check is runtime only. `card()` doesn't narrow the type of `on`, because message types are structurally interchangeable strings; see [Generic `Node`](#open-questions).
 
-The declaration also lets the runtime do two things it can't do today:
+The registry records which card registered each handler (`Entry.process`). That makes two things possible that weren't before:
 
-- The registry records which card registered each handler, so the inspector can show, per node, which messages are answered and by which card.
+- The inspector can show, per node, which messages are answered and by which card.
 - `dispatch` can distinguish "bubbled past nodes that don't declare this message" from "reached a node that declares it and nothing is registered", and warn about the second in development.
 
-## Example: two packages
+## Packages in this repository
+
+| Package         | Depends on                       | Cards                                  | Owns                                                                 |
+| --------------- | -------------------------------- | -------------------------------------- | -------------------------------------------------------------------- |
+| `@cards/shapes` |                                  | container, canvas                      | `Shape`, `Container`, the container protocol                         |
+| `@cards/tools`  | `shapes`                         | card, pointer, tool, select, inspector | pointer events, `Toggle`, the `tool`, `default`, and `template` tags |
+| `@cards/lines`  | `shapes`, `tools`                | line, pen                              | `Line`                                                               |
+| `@cards/deck`   | `shapes`, `tools`                | deck                                   | `Deck`                                                               |
+| `@cards/map`    | `shapes`, `tools`, `maplibre-gl` | map                                    | `MapShape`, `Camera`                                                 |
+
+Examples: select and inspector are a bare shape with their tool's tag, the pen a shape tagged `pen`, the line a zigzag, the deck empty, and the map 300 by 200 pixels over Berlin. Container, canvas, card, pointer, and tool have none.
 
 ### `shapes`
 
 Owns the container protocol, the canvas, and the generic container behavior. Its entry module is shown in [Entry module](#entry-module).
 
 ```tsx
-// src/packages/shapes/container.tsx
-import { hasTag, State, type Behavior } from "core";
-import { Place, Remove, Taker, type Container } from "./index.tsx";
+// packages/shapes/src/container.ts
+import { hasTag, State, type Behavior } from "@cards/core";
+import { Place, Remove, Taker, type Container } from "./index.js";
 
-export default (({ request, on }) => {
-  const me = () => request(State).read<Container>();
+export default ((node) => {
+  const { request, on } = node;
+  const self = () => request(State).read<Container>();
 
-  on(Taker, ({ node }, next) => {
-    const takes = me().takes;
-    return takes && hasTag(node, takes) ? me() : next();
+  on(Taker, ({ node: held }, next) => {
+    const takes = self().takes;
+    return takes !== undefined && hasTag(held, takes) ? node : next();
   });
 
-  on(Place, ({ node, fields, at }) => {
-    request(State).change((d) => {
-      // the body of placeIn
-    });
-    …
+  on(Place, ({ node: placed, fields, at }) => {
+    // the body of placeIn
   });
 
-  on(Remove, ({ node }) => {
+  on(Remove, ({ node: removed }) => {
     // the body of removeFrom
   });
 }) satisfies Behavior;
@@ -377,24 +458,13 @@ export default (({ request, on }) => {
 
 ### `lines`
 
-Depends on `shapes`. Owns the line shape and the pen tool.
-
-```json
-{
-  "name": "lines",
-  "main": "index.tsx",
-  "dependencies": {
-    "shapes": "automerge:3RFhQ8vNwJmU7Ki5yX2bHdLpTcE9",
-    "tools": "automerge:4KpLm2wQxYvRt8Jn6Hc3BdSfGeU7"
-  }
-}
-```
+Depends on `shapes` and `tools`. Owns the line shape and the pen tool.
 
 ```tsx
-// src/packages/lines/index.tsx
-import { card, packageUrl, tag } from "core";
-import { Drop, type Point, type Shape } from "shapes";
-import { PointerDown, PointerMove, PointerUp, Toggle } from "tools";
+// packages/lines/src/index.ts
+import { card, NewNode, packageUrl, tag } from "@cards/core";
+import { tags as shapes, type Point, type Shape } from "@cards/shapes";
+import { PointerDown, PointerMove, PointerUp } from "@cards/tools";
 
 export const url = packageUrl(import.meta.url);
 export const tags = { line: tag(url, "line"), pen: tag(url, "pen") };
@@ -408,39 +478,70 @@ export const cards = [
     description: "Draws a polyline through its points.",
     matches: tags.line,
     accepts: [],
-    behavior: () => import("./line.tsx"),
+    behavior: () => import("./line.js"),
+    example: ({ request }) =>
+      request(NewNode, {
+        "@tags": { [shapes.shape]: true, [tags.line]: true },
+        x: 0,
+        y: 0,
+        points: [ … ], // a zigzag
+        color: "#1d1d1f",
+        width: 3,
+      } satisfies Line),
   }),
   card({
     id: "pen",
     title: "Pen",
     description: "A tool that draws lines onto whatever surface you press.",
     matches: tags.pen,
-    accepts: [PointerDown, PointerMove, PointerUp, Toggle],
-    behavior: () => import("./pen.tsx"),
+    accepts: [PointerDown, PointerMove, PointerUp],
+    behavior: () => import("./pen.js"),
+    example: ({ request }) =>
+      request(NewNode, {
+        "@tags": { [shapes.shape]: true, [tags.pen]: true },
+        x: 0,
+        y: 0,
+      } satisfies Shape),
   }),
 ];
 ```
 
 ```tsx
-// src/packages/lines/pen.tsx
-import { hasTag, Node, State, type Behavior } from "core";
-import { hit } from "dom";
-import { Drop, tags as shapes } from "shapes";
-import { MyPointer, PointerDown, PointerMove, PointerUp } from "tools";
-import { tags, type Line } from "./index.tsx";
+// packages/lines/src/pen.tsx
+import { createMemo } from "solid-js";
+import {
+  hasTag,
+  MyPointer,
+  NewNode,
+  rootOf,
+  State,
+  type Behavior,
+  type Node,
+} from "@cards/core";
+import { hit } from "@cards/core/dom";
+import { Drop, tags as shapes } from "@cards/shapes";
+import {
+  PointerDown,
+  PointerMove,
+  PointerUp,
+  type PointerInput,
+} from "@cards/tools";
+import { tags, type Line } from "./index.js";
 
-export default (({ url, request }) => {
+export default (({ url, parent, request }) => {
+  const pointer = createMemo(() => request(MyPointer));
   …
   function start(e: PointerInput) {
+    const root = rootOf(parent!);
     const surface = surfaceOf(hit(root, e.element)) ?? root;
-    const line = Node.create<Line>({
+    const line = request(NewNode, {
       "@tags": { [shapes.shape]: true, [tags.line]: true },
       x: 0,
       y: 0,
       points: [{ x: 0, y: 0 }],
       color: "#1d1d1f",
       width: 2,
-    });
+    } satisfies Line);
     surface.request(Drop, { node: line, client: e.client, scale: 1 });
     request(State).put({ stroke: line.url, from: e.client });
   }
@@ -453,74 +554,68 @@ function surfaceOf(node: Node): Node | undefined {
 }
 ```
 
-The pen declares no `Drop` in `accepts`, because it sends `Drop` and never handles it. Sending is not restricted.
+### `map`
 
-## Host changes
+Brings its own npm dependency. `maplibre-gl` loads from jspm.io through the package's import map, and MapLibre finds its worker next to its own module URL. The map card adopts MapLibre's stylesheet for as long as it is attached, following the loader's [package conventions](loader-spec.md#package-conventions).
 
-### `core`
+## Host
 
-- Add `packageUrl`, `tag`, and `card`.
-- Add `accepts` to `Scope` and the check in `Node.on`.
-- Record the registering process on each registry `Entry`.
+### `@cards/core`
 
-### `compile.ts`
+- `packageUrl`, `tag`, `card`, and the `Card` and `CardDescriptor` types.
+- `Describe`, answered by the dealer; `MyPointer` and `Pointers`, answered by presence; `NewNode`, answered by the backend.
+- `accepts` on `Scope` and the check in `Node.on`.
+- The registering process on each registry `Entry`.
+- `@cards/core/dom` and `@cards/core/render`, as described in [Sharing behavior through messages](#sharing-behavior-through-messages).
 
-Replace the synchronous `compile(source)` with a module loader:
+There is no `Node.create`. Documents are only created through the backend, which stores them at once.
 
-- `importPackage(url)` resolves the package's current heads, builds the pinned URL, and calls `import()`. On failure, it retries once under a URL with a distinct query string, because the ES module map memoizes failed imports.
-- A handoff responder listens on the `BroadcastChannel`, resolves paths in package documents, compiles TSX, rewrites dependency specifiers, and writes to the cache.
+### `site/src/dealer.ts`
 
-### `dealer.ts`
+- `dealer(loader)` returns the root behavior. For each node tagged `card`, it splits `card` into a package URL and a descriptor id, watches the package through the loader, and looks up the descriptor in the module's `cards`.
+- It matches nodes against the descriptor's `matches` tag, as before.
+- It attaches with the descriptor, so that `accepts` is enforced.
+- Attachments are keyed on the descriptor's identity, replacing `hash(source)`. A new module from the loader means new descriptors, so every attachment made from the old module is disposed and re-made.
+- Attaching is asynchronous: the descriptor's `behavior()` imports the behavior module on first use. If the attachment is disposed before the module arrives, it never attaches.
+- It answers `Describe` at the root with the descriptor of the card that asks.
 
-- For each node tagged `card`, read `package` and `card`, import the package's entry at its current heads, and look up the descriptor.
-- Match nodes against the descriptor's `matches` tag, as today.
-- Attach with the descriptor, so that `accepts` is enforced.
-- Key attachments on the package's heads and the heads of every transitive dependency, replacing `hash(source)`. When any of those change, dispose the attachment and re-import.
-- Attaching becomes asynchronous. A card is pending from the time its node appears until its module loads; the dealer puts nothing on the target in the meantime.
+### `site/src/presence.ts`
 
-### `container.tsx`
+Answers `MyPointer` and `Pointers` at the root, with nodes in the requester's scope.
 
-Dissolve the module. `View` and `Child` move to `render.tsx`. `placeIn`, `removeFrom`, `taker`, and `myPointer` become messages as described in [Sharing behavior through messages](#sharing-behavior-through-messages).
+### `site/src/main.tsx`
+
+Opens the repo with Subduction (IndexedDB storage, a `BroadcastChannel` between tabs, and the Subduction sync server) and creates the loader with the environment from the Vite plugin. It opens the space named in the URL hash, or seeds a new one:
+
+1. Create the canvas document with the repo, and attach the backend to it, so that `NewNode` has a root to be answered at.
+2. For each package, `loader.load` its entry module and create a card document per descriptor in `cards`, with `card: tag(package, id)` and the descriptor's `example(root)`.
+3. Lay out the canvas: the select tool (the default), the pen, the inspector, a deck holding every card, and a map of Berlin.
+
+The package URLs come from `virtual:cards/packages`, provided by a plugin in `site/vite.config.ts` that reads each `../../cards-packages/*/.pushwork/config.json` at build time, from a checkout next to this repository. A folder that was never published isn't listed. The cards on the deck need no site change: a new package or a new descriptor shows up in the next seeded space. The layout is the one site-specific part. It names the tags it needs by package folder: `shapes` for the canvas, `tools` for the pointer and tools, `lines`, `deck`, and `map`.
+
+The user is a document created with `NewNode`, with their pointer nested in it, and is kept per tab in `sessionStorage`.
 
 ### Build
 
-- Emit `core`, `dom`, `render`, and the Solid and MapLibre modules as separate entries, and write an import map into `index.html`.
-- Register the service worker at startup. During development, Vite serves the host; the service worker intercepts only paths whose first segment decodes to an `automerge:` URL.
+`site/vite.config.ts` adds the loader plugin from `@cards/loader/vite` with the environment. The plugin serves the service worker in development and emits it, together with one module per environment specifier, in the build.
 
-### `tsconfig.json`
+### TypeScript
 
-Map each package alias to its folder, so that `tsc` checks cross-package imports:
-
-```json
-"paths": {
-  "core": ["./src/core/index.ts"],
-  "dom": ["./src/dom.ts"],
-  "render": ["./src/render.tsx"],
-  "shapes": ["./src/packages/shapes/index.tsx"],
-  "shapes/*": ["./src/packages/shapes/*"],
-  "lines": ["./src/packages/lines/index.tsx"]
-}
-```
+In `cards-core`, `loader`, `core`, and `site` each have a `tsconfig.json` that extends `tsconfig.base.json` and a `typecheck` script; the root runs `pnpm -r typecheck`. A package in `cards-packages` has a self-contained `tsconfig.json` that also emits its declarations. It resolves `@cards/core` through its linked dev dependency, to core's source, and other packages through `node_modules`, as pnpm installed them from their documents. Published declarations import `@cards/core` by name, so a dependent checks them against its own copy of core.
 
 ## Migration
 
-Each step leaves the application working.
-
-1. **Service worker and loader.** Add the service worker, the handoff responder, the import map, and `importPackage`. Load one existing card through it, with its source wrapped as a single-file package, to prove the path works.
-2. **Package documents.** Move `src/cards/*.tsx` into `src/packages/*/`, add entry modules, and change the seed to upload packages. Change the dealer to import entries and read descriptors. Delete the duplicated `message(...)` declarations.
-3. **Qualified tags.** Switch `@tags`, `matches`, and `takes` to qualified strings. Existing canvases are not migrated; a new canvas is seeded.
-4. **Messages for behavior.** Add the container card. Replace calls to `placeIn`, `removeFrom`, `taker`, and `myPointer` with messages. Delete `container.tsx`.
-5. **Accepted messages.** Add `accepts` to every descriptor and the check in `Node.on`.
+Existing canvases are not migrated: their card documents hold `source`, and their tags are bare. A new canvas is seeded from the published packages. To change a package, edit its folder and run `pnpm install && pnpm push` in it. Open pages pick up the new version without a reload. A new dependency goes into `package.json` as the dependency's document URL, under its `@cards/<name>` alias; push the dependency first.
 
 ## Open questions
 
-**Pinned dependencies.** `dependencies` holds plain URLs, so dependencies are live. A package that wants to freeze a dependency could use a URL with heads. The cost is that it then compiles against an old contract while the tree runs the new one, so the two can disagree on a message's request shape. Decide whether to allow this at all.
+**Pinned dependencies.** The page always runs every package at its latest heads, while `tsc` checks against the heads in the lockfile. A package can therefore run against a newer contract than it was checked against, and the two can disagree on a message's request shape. Running the locked heads instead would remove the drift, but then two packages could run different versions of one dependency, with the same tags and messages and different code. Decide whether to allow this at all.
 
 **Who answers the handoff.** With several tabs open, every tab that holds the repo answers every request. The first `cache.put` wins and the rest are redundant. This is harmless but wasteful. Options are a leader election over the same channel, or moving the repo to a shared worker as Patchwork does.
 
-**Typed tags.** `tags` is `Record<string, string>` at the type level. A generated declaration file per package would make `tags.shape` a literal type, which would let `hasTag` and `matches` reject unknown tags at compile time. Not needed until there's an in-app editor.
+**Typed tags.** `tags` is `Record<string, string>` at the type level. A literal type per tag would let `hasTag` and `matches` reject unknown tags at compile time. Not needed until there's an in-app editor.
 
-**Generic `Node`.** Whether to make `Node` generic in its accepted messages so that `pointer.on(Drop, …)` is a type error in a card that doesn't declare `Drop`. The runtime check covers this; the type-level version touches every helper that returns a node.
+**Generic `Node`.** Whether to make `Node` generic in its accepted messages, so that `pointer.on(Drop, …)` is a type error in a card that doesn't declare `Drop`. Messages would need a nominal brand first, since today any two messages with compatible request and response types are interchangeable to the type checker. The runtime check covers this; the type-level version touches every helper that returns a node.
 
 ## Alternatives considered
 
@@ -531,3 +626,5 @@ Each step leaves the application working.
 **Per-card `imports` map.** Each card document lists the cards it imports, by alias, and `require` resolves aliases through the document. Rejected because it ties dependencies to cards rather than to code, so two cards from the same codebase would declare the same imports twice.
 
 **Keep `placeIn` as an import.** Simplest, but it leaves two ways to share behavior and means the host decides what a container is. Making it a message lets a package define containers the host has never seen.
+
+**The package as a node in the card document.** `package: Node` next to `card: id`. Rejected because the tree walk then descends into the package document and every file in it.

@@ -1,0 +1,7 @@
+packages:
+  - loader
+  - core
+  - site
+
+allowBuilds:
+  cbor-extract: false

@@ -1,7 +1,7 @@
 # Package loader
 
-Status: proposal
-Depends on: an Automerge repo, pnpm 12 (custom resolvers and fetchers in `.pnpmfile.cjs`), `@jspm/generator`, `@inkandswitch/patchwork-bootloader` (service worker and handoff protocol), `@inkandswitch/patchwork-filesystem` (`resolvePath`, URL helpers)
+Status: implemented in `loader/` (`@cards/loader`)
+Depends on: an Automerge repo, pnpm 12 (custom resolvers and fetchers in a `globalPnpmfile`), `@jspm/generator`, pushwork, `@inkandswitch/patchwork-bootloader` (service worker and handoff protocol), `@inkandswitch/patchwork-filesystem` (`resolvePath`, URL helpers)
 Browser support: Chrome with multiple import maps (133 and later). Other browsers are out of scope for now.
 
 ## Summary
@@ -119,11 +119,22 @@ document.head.append(script);
 
 Chrome merges multiple import maps and ignores, with a console warning, any entry that would change the resolution of a specifier that has already been resolved. Scopes here are only ever added, and a prefix is unique to a version-plus-closure, so a new scope never conflicts with a resolved specifier. Relative imports inside a package resolve under the same prefix and inherit the scope.
 
-The environment is the single top-level `imports` block, written into `index.html` at build. Package maps never contain environment specifiers (the generator is run with `inputMap` and `ignore` for them at publish), so a dependency that imports `solid-js` gets the page's copy.
+The environment is the single top-level `imports` block. `createLoader` appends it as the first import map, before any scope and before anything is imported through it. Package maps never contain environment specifiers (the generator is run with `inputMap` and `ignore` for them at publish), so a dependency that imports `solid-js` gets the page's copy.
+
+The environment must map to the host's own module instances, not to copies. With Vite, the `loader()` plugin from `@cards/loader/vite` does this. You give it each specifier and the module the app imports it as, and it emits `/environment/<specifier>.js` re-exporting that module, so the page and its packages share one instance. The plugin also serves the service worker at `/service-worker.js`. Its `virtual:loader/environment` module is the import map to pass as `environment`:
+
+```ts
+// vite.config.ts
+loader({ "solid-js": "solid-js", "@cards/core": "@cards/core" });
+
+// main.tsx
+import environment from "virtual:loader/environment";
+const loader = createLoader({ repo, environment });
+```
 
 ### Fetching
 
-The service worker is `@inkandswitch/patchwork-bootloader/service-worker`, emitted as `/service-worker.js` and registered at startup. It is used unchanged. For a same-origin request whose first path segment decodes to an `automerge:` URL, it checks its cache, and on a miss broadcasts a handoff request on `HANDOFF_CHANNEL` and waits for a reply. Everything else passes through to the network and is cached opportunistically, which is what makes CDN dependencies available offline after first use.
+The service worker is `@inkandswitch/patchwork-bootloader/service-worker`, bundled into one file (it imports its handoff constants), emitted as `/service-worker.js`, and registered by `createLoader`. It is used unchanged. The loader waits until the page is controlled before its first import. A hard reload bypasses an active service worker for that page load and the worker won't claim the page again, so in that case the loader reloads the page once. For a same-origin request whose first path segment decodes to an `automerge:` URL, it checks its cache, and on a miss broadcasts a handoff request on `HANDOFF_CHANNEL` and waits for a reply. Everything else passes through to the network and is cached opportunistically, which is what makes CDN dependencies available offline after first use.
 
 The responder runs in the tab, next to the repo, and listens on the same channel. It's written here rather than taken from `patchwork-next`, whose responder lives inside its automerge SharedWorker and doesn't know the `@<digest>` suffix. For each request it:
 
@@ -162,12 +173,23 @@ The loader reads what the publish pipeline writes. A package folder publishes wi
 
 ```
 pnpm install                       # npm from the registry, package dependencies from the repo
-tsc --noEmit                       # type check
 babel src --out-dir dist           # TS → JS, Solid JSX → DOM calls; no bundling
-tsc --emitDeclarationOnly          # dist/*.d.ts for dependents
-generate-importmap                 # importmap.json, derived from the lockfile
+tsc                                # type check, and dist/*.d.ts for dependents
+cards-importmap                    # importmap.json, derived from the lockfile
 pushwork sync                      # publish the folder as a package document
 ```
+
+Only `cards-importmap` comes from the loader, as the bin of `@cards/loader`. The rest is the package's own `build` script and configs: Babel with the Solid preset (`generate: "dom"`) and the TypeScript preset, file by file, and a `tsconfig.json` that emits declarations only. `pushwork init` replaces `sync` the first time.
+
+Pinning reads `package.json` and `importmap.json` at the root's heads, and the responder serves `dist/` at them, so these must be exact bytes at those heads. The package's `.pushworkattributes` marks them as artifacts, which pushwork stores immutably and links with heads in the root document:
+
+```
+dist/**         artifact
+package.json    artifact
+importmap.json  artifact
+```
+
+Everything else, such as `src/` and the configs, is linked without heads.
 
 #### Installing package dependencies
 
@@ -177,15 +199,19 @@ A package dependency is written as an `automerge:` URL:
 "dependencies": { "shapes": "automerge:3RFhQ8vNwJmU7Ki5yX2bHdLpTcE9" }
 ```
 
-A `.pnpmfile.cjs` at the workspace root registers a resolver and a fetcher for that scheme. The resolver opens a Node repo (storage plus the Subduction endpoint, as pushwork does), finds the document, and returns `{ id: "<alias>@<version>", resolution: { type: "custom:automerge", url, heads } }`, where `version` is read from the document's `package.json` and `heads` are the document's current heads. The fetcher views the document at those heads, walks it with `resolvePath`, writes the files to `.cards/store/<id>@<heads>/`, and returns `{ local: true, filesIndex }` with absolute paths. pnpm hard-links them into `node_modules/<alias>` like a `file:` dependency, with `dist/*.d.ts`, and writes `url` and `heads` to the lockfile.
+`loader/tools/pnpmfile.cjs` registers a resolver and a fetcher for that scheme. It is meant as pnpm's `globalPnpmfile`, which runs for every project ahead of the project's own, so a package folder needs no pnpmfile and no workspace; pnpm leaves it out of the lockfile's `pnpmfileChecksum`. The resolver opens a Node repo (storage in `~/.cache/cards/repo`, or under `$CARDS_CACHE`, plus the Subduction endpoint, as pushwork does), shared by every project on the machine, and finds the document. A Node repo answers from its storage first, which can hold heads from an earlier session, so the resolver waits until the document is current with the sync server: its synced heads are present locally and either arrived during this lookup or have stopped changing. It returns `{ id: "<alias>@<version>+<headsId>", resolution: { type: "custom:automerge", url, heads }, manifest }`, where `version` is read from the document's `package.json`, `heads` are the document's current heads, and `headsId` is a short hash of them. pnpm keys its store by `id`, so without the heads in it a republished package with an unchanged version would never be fetched again.
 
-A frozen install reproduces the exact package. A plain `pnpm install` re-resolves when `shouldRefreshResolution` says the heads have moved, so dependencies advance when you ask them to and not otherwise.
+The fetcher views the document at those heads, walks it with `resolvePath`, writes the files to `~/.cache/cards/store/<id>@<heads>/`, and returns `{ delegate: { type: "directory", directory } }`. pnpm then treats it as a directory dependency: it imports the files into `node_modules/<alias>`, including `dist/*.d.ts`, and writes `url` and `heads` to the lockfile.
+
+A frozen install reproduces the exact package. A plain `pnpm install` re-resolves when `shouldRefreshResolution` says the heads have moved, so dependencies advance when you ask them to and not otherwise. pnpm skips resolution entirely when the lockfile and manifests haven't changed, which would also skip that check, so the global pnpm config sets `optimisticRepeatInstall: false`.
+
+The hooks run in a process pnpm 12 ends when the install is done. Older pnpm runs them in its own process, where the resolver's open sync connection keeps it alive after the install, so packages pin pnpm 12 with `packageManager`.
 
 The alias is free. Nothing keys on a name or a scope; a dependency is a document.
 
 #### Generating the import map
 
-`generate-importmap` reads `pnpm-lock.yaml` and never resolves a version on its own:
+`cards-importmap` reads `pnpm-lock.yaml` (the document with `settings`; pnpm 12 writes its own toolchain into a first YAML document) and never resolves a version on its own:
 
 - **Package dependencies** (lock entries with `resolution.type === "custom:automerge"`) go into the map directly as `/automerge%3A<id>/<entry>`, the same same-origin form the service worker serves, with `<entry>` from the installed copy's `package.json`. They are passed to the generator through `inputMap` and `ignore`, so it never traces them. Tracing isn't needed: a package dependency publishes its own `importmap.json`, and the loader installs that scope when it pins the dependency. The entry has no heads; the loader pins it.
 - **The environment** is passed the same way, so a dependency that imports `solid-js` gets the page's copy.
@@ -249,6 +275,10 @@ On the first load the loader pins `lines@L1` with closure `{ shapes: S1 }`, appe
 **Transitive CDN versions can differ across workspaces.** Within one workspace every map derives from the same lockfile, so shared transitive dependencies agree. Packages published from different workspaces may pin the same transitive to different versions under the generator's `https://ga.jspm.io/` scope; Chrome keeps the first mapping it saw and warns. A provider whose modules import transitives by absolute URL (`esm.sh`) would remove the shared scope entirely, at the cost of switching CDN.
 
 **Duplicate versions of one name aren't aligned.** `resolutions` is flat (`name → version`). Where pnpm installed two versions of a name, the generator picks per its own rules and the CDN graph can differ from `node_modules` for that name. This affects which transitive the browser loads, not types.
+
+**A publish can reload a watched package twice.** `pushwork sync` commits the files, then stamps `lastSyncAt` on the root document about a second later. Both change the root's heads, so if the gap is longer than `debounce` the callback runs twice, with identical bytes under two prefixes.
+
+**Adopted stylesheets cascade after the document's.** A package that attaches its CSS with `adoptedStyleSheets`, as the conventions ask, wins ties against the host's stylesheets. Host rules that style a package's elements need higher specificity.
 
 **Modules are never unloaded.** A module can't be removed from the realm it was loaded into, so old closures stay in memory until the page reloads. Real unloading would mean a disposable realm per closure (an iframe, or a `ShadowRealm` later) with the environment bridged in. The design keeps that possible as long as the environment is reached only through the import map, consumers follow the [ownership](#ownership) rule, and packages follow the [conventions](#package-conventions) above.
 
