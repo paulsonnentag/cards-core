@@ -39,7 +39,7 @@ export const View: Component<
     const el = built(own.node);
     const previous = slot.firstChild;
     if (previous && previous !== el) move(previous, lot());
-    if (el && el.parentNode !== slot) move(el, slot);
+    if (el.parentNode !== slot) move(el, slot);
   });
   onCleanup(() => {
     const el = slot.firstChild;
@@ -59,15 +59,15 @@ export const View: Component<
 type Built = { view: Component; el: ChildNode; dispose(): void };
 const views = new Map<Node["url"], Built>();
 
-// the node's view as one element, rebuilt only when the card that draws it puts a different view
-function built(node: Node): ChildNode | undefined {
-  const view = state<Viewed>(node).view;
+// the node's view as one element, rebuilt only when the card that draws it puts a different view. A node no card
+// draws (yet) is a box with a question mark
+function built(node: Node): ChildNode {
+  const view = state<Viewed>(node).view ?? Unknown;
   const old = views.get(node.url);
   if (old && old.view === view) return old.el;
   old?.dispose();
   old?.el.remove();
   views.delete(node.url);
-  if (!view) return undefined;
   const entry = createRoot((dispose) => ({
     view,
     el: element(view({})),
@@ -76,6 +76,8 @@ function built(node: Node): ChildNode | undefined {
   views.set(node.url, entry);
   return entry.el;
 }
+
+const Unknown: Component = () => <div class="unknown">?</div>;
 
 // a view that isn't a single element (text, a fragment) gets a box of its own, so it moves as one
 function element(rendered: JSX.Element): ChildNode {

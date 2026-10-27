@@ -1,623 +1,633 @@
-# Packages, cards, and messages
+# Cards
 
-Status: implemented
-Scope: `core/` and `site/` in this repository (`cards-core`), and the packages in `cards-packages`. Code loading (`loader/`) is specified separately in [loader-spec.md](loader-spec.md).
+Status: proposed. This document describes the next design of the tree. The sections on packages, messages, and loading describe what is implemented today and doesn't change.
+Scope: `core/` and `site/` in this repository (`cards-core`), and the packages in `cards-packages`. Code loading is specified in [loader-spec.md](loader-spec.md).
 
-## Summary
+## Overview
 
-This document describes three changes to how code is organized and shared in Cards:
+Cards is a shared canvas. Everything on it is a **node**: a shape, a map, a tool, a deck of cards, your pointer. A **card** adds behavior to nodes. You drag cards onto the canvas, and the nodes they match come alive.
 
-- Split **packages** from **cards**. A package is an Automerge document that holds published code and is the unit of code and dependencies. A card is a node in the tree that activates one behavior from a package.
-- Share behavior only through **messages**. Helpers that read or write documents, such as `placeIn`, are no longer imported: a card writes the documents whose meaning it owns, and asks other cards through messages. Packages share types, tags, and message definitions through ordinary JavaScript imports.
-- Load package code as real ES modules through the [package loader](loader-spec.md), so that a module can derive the package it belongs to from `import.meta.url`. Tags and messages are then qualified by the package URL without a compiler step or a virtual module.
+The design rests on one distinction:
 
-A fourth, smaller change follows from the first three: a card declares which messages it accepts, and the runtime rejects handlers for anything else.
+- A **document** is data. It's an Automerge document with a URL. Documents sync between everyone who has the canvas open.
+- A **node** is a document placed somewhere. It has a parent, a name in that parent, and the cards dealt to it.
 
-## Goals
+The same document can be placed twice. That gives you two nodes. They show the same data, but each one has its own name, its own cards, and its own temporary state.
 
-- One mechanism for sharing: imports carry contracts, messages carry behavior.
-- One definition per message and per tag. Before this change `Drop` was declared in five files and `PointerDown` in four, and they agreed only because they spelled the same string.
-- Tags that are owned by a package, so that two packages can both define `line` without colliding.
-- Live dependencies. When a package changes, the cards that depend on it are re-attached with the new code, as the dealer already did for a single card's source.
-- No change to the message protocol itself. `dispatch`, `on`, and `request` keep their semantics.
+## Layers
 
-## Non-goals
+Three layers build on each other. Each one knows only about the layers below it.
 
-- An in-app code editor. This design makes one possible but doesn't include it.
-- Pinned dependency versions at run time. The lockfile pins what a package is type-checked against; the page always runs the latest version of every package. See [Open questions](#open-questions).
-- Moving the Automerge repo into a shared worker. The service worker design permits it, but the responder runs in the tab.
+| Layer        | Lives in           | Knows about                                                                                                                  |
+| ------------ | ------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| **Core**     | `@cards/core`      | Documents, nodes, paths, the three parts of a document, puts, symbols, cards as descriptors, rendering a node's `view`.      |
+| **Host**     | `site/`            | The dealer and its reach rule, presence, the seed. The one place that names concrete tags from packages.                     |
+| **Packages** | `cards-packages/*` | Everything you can see: shapes, embeds, surfaces, containers, tools, pointers, decks, maps. Each package owns its own ideas. |
 
-## Background
+A document has three parts: `value`, `children`, and `tags`. Core owns the parts. It never looks inside `value`. Everything in `value` belongs to whoever writes it, so packages don't need to avoid any reserved words.
 
-Cards were stored as documents whose `source` field was TSX. The dealer compiled that source with Babel in the browser and attached the resulting behavior to every node that carried the card's `matches` tag. A card could import from a fixed set of host modules (`compile.ts`):
+Words like _surface_, _container_, _shape_, and _embed_ come from the `shapes` package. They aren't part of the model. This document uses them in examples and in the sections about packages.
+
+## Terms
+
+### Core
+
+**Document**
+: An Automerge document, named by its URL. Shared data, in three parts: `value`, `children`, and `tags`.
+
+**Node**
+: A document placed under a parent. Identified by its path.
+
+**Name**
+: The key a child has in its parent's `children`. Any string that isn't empty and has no `/`.
+
+**Path**
+: The names from the root to a node, joined with `/`. The root's path is `/`.
+
+**Put**
+: A temporary value on a node. Puts live in memory in one tab. They're never stored.
+
+**Card**
+: A node that names a card descriptor in a package. The dealer attaches the descriptor's behavior to every node the card reaches and matches.
+
+**Behavior**
+: The code a card runs on a node.
+
+**Package**
+: An Automerge document that holds published code: types, symbols, and card descriptors.
+
+**Symbol**
+: A string of the form `<package URL>#<name>`, owned by the package whose URL it carries. Tags and messages are symbols.
+
+**Tag**
+: A symbol in a document's `tags`. A node's tags decide which cards match it.
+
+**Message**
+: A symbol you send to a node, typed with a request and a response.
+
+**Host**
+: The code bundled with the page: `@cards/core`, the loader, and the site (the dealer, presence, and the seed).
+
+### From `@cards/shapes`
+
+**Shape**
+: A node with a position of its own: `x`, `y`, `scale`, and `order` in its value. A sheep, a line, a hat.
+
+**Embed**
+: A shape that shows something that has no position of its own. It has a size and one child, named `of`. A map on a canvas is an embed with the map inside.
+
+**Container**
+: A node whose card draws its children. A canvas, a map, a deck, an embed, and a pointer are containers.
+
+**Surface**
+: A container that draws shapes at their positions: a canvas or a map.
+
+## Documents and nodes
+
+### Documents
+
+A document is plain data. It has no parent and no behavior. The backend reads and writes documents through the Automerge repo.
+
+Every document has the same shape:
 
 ```ts
-const modules = {
-  "solid-js": solid,
-  "solid-js/web": solidWeb,
-  "solid-js/store": solidStore,
-  "maplibre-gl": maplibre,
-  core,
-  container,
-  dom,
+type Doc<T = unknown> = {
+  value: T; // userspace. Core never looks inside.
+  children: Record<string, AutomergeUrl>; // name → child document
+  tags: Record<string, true>; // the tags this document carries
 };
 ```
 
-This led to two splits that were hard to reason about:
+`children` and `tags` are flat. `value` is anything a package wants, and core treats it as opaque.
 
-1. **Behavior was shared two ways.** `container.tsx` exported `placeIn`, `removeFrom`, `taker`, and `myPointer`. These functions read and write documents and walk the tree, so they were the container protocol in function form, while `Drop` and `Pan` were the same protocol in message form. `taker` was the `dispatch` ancestor walk written by hand.
-2. **Contracts were defined in cards but couldn't be imported from them.** `Shape`, `Container`, `DropRequest`, and `PointerInput` lived in card files. The host imported them as types, but a card couldn't import another card at run time, so every card re-declared the message constants it used.
+You create a document with `NewNode`:
 
-Patchwork ([`patchwork-next`](../patchwork-next)) solves the loading half of this problem with a service worker that serves Automerge documents over HTTP, pins module URLs to document heads, and uses an import map for host libraries. The [package loader](loader-spec.md) adopts that approach.
-
-## Terminology
-
-**Package**
-: An Automerge document published from a package folder: `package.json`, `src/`, the transpiled `dist/`, and `importmap.json`. The unit of code, dependencies, and tag ownership.
-
-**Card**
-: A node in the tree that names one card descriptor of a package. The unit of dealing: the dealer attaches the descriptor's behavior to every node carrying the descriptor's tag.
-
-**Card descriptor**
-: An object exported by a package's entry module that describes one card: its title, the tag it matches, the messages it accepts, and its behavior.
-
-**Tag**
-: A string of the form `<package URL>#<name>`. Owned by the package whose URL it carries.
-
-**Message**
-: A string of the form `<package URL>#<name>`, typed with a request and a response by `message<Req, Res>()`.
-
-**Host**
-: The code bundled with the application: `@cards/core`, the loader, and the site, which holds the dealer, presence, and the seed in `main.tsx`.
-
-## Design
-
-### Repository layout
-
-Two repositories, checked out next to each other. `cards-core` (this one) is a pnpm workspace used from source:
-
-```
-loader/   @cards/loader   the package loader, its Vite plugin, the pnpm resolver, and cards-importmap
-core/     @cards/core     nodes, messages, the backend; also @cards/core/render
-site/     @cards/site     the page: repo, loader, dealer, presence, and the seed
+```ts
+const doc = request(NewNode, {
+  tags: { [shapes.shape]: true, [tags.line]: true },
+  value: { x: 0, y: 0, points: [{ x: 0, y: 0 }] },
+});
 ```
 
-`cards-packages` is not a workspace. Each folder in it is a package on its own (`@cards/shapes`, `@cards/tools`, `@cards/lines`, `@cards/deck`, `@cards/map`) that installs, builds, and pushes by itself, so a folder can be copied out and worked on alone. Its README describes the one-time machine setup. `core` is part of the page's environment, so a package imports it under its own name and gets the page's instance.
+`NewNode` stores the document right away and returns a **detached node**: a node with a `url` but no path. You can read and change a detached node's document, and you can place it. Nothing is dealt to it and nothing draws it until it's placed.
+
+A document that nothing places stays in the repo, unused.
+
+### Nodes are places
+
+A node is a document at a path. The path is its identity. Two nodes with different paths are different nodes, even when they show the same document.
+
+Every node has:
+
+| Property | What it is                                                    |
+| -------- | ------------------------------------------------------------- |
+| `url`    | The document it shows.                                        |
+| `path`   | Its names from the root. Undefined for a detached node.       |
+| `name`   | The last name in its path.                                    |
+| `parent` | The node above it. Undefined for the root and detached nodes. |
+
+Each node has its own puts, its own message handlers, its own element on screen, and its own cards. None of these are shared between two placements of one document.
+
+### Children and names
+
+A node's children are the entries in its document's `children` part. Each entry is a name and the child's URL. That's all core stores about a child.
+
+A name identifies the placement, not the document, so the same document can appear under two names. Any name works. `place` makes a short random one when you don't give one. Use a meaningful name when there is one: a card's example is at `children/example`, and what an embed shows is at `children/of`.
+
+`children` is the only part that makes nodes. A document URL in `value` is a reference to data, not a child.
+
+Core says nothing about where a package keeps what it knows about a child. `shapes` keeps a shape's position in the shape's own value, and gives things that have no position an embed. See [Shapes and embeds](#shapes-and-embeds).
+
+### Paths and identity
+
+A path is the names from the root to a node, as a string with `/` between them:
+
+```
+/                 the root
+/k3f9             a sheep on the root canvas, named k3f9
+/m2p7             an embed on the root canvas
+/m2p7/of          the map inside it
+/m2p7/of/x1y2     a shape on that map
+```
+
+`nodeIn(scope, path)` gives you the node at a path. The pointer reports the node under it as a path. Presence keys its data by path. The inspector shows paths.
+
+Paths are the same in every tab, because every tab reads the same documents.
+
+### Moving a node
+
+When you drag a node from one container to another, its name travels with it:
+
+1. The select tool lifts the node. It removes the name from the old parent's `children` and puts the same name, with the same URL, into the pointer's `children`.
+2. On release, the container that takes the drop stores the same name in its own `children`.
+
+The node's path changes, but its name doesn't. A node keeps its puts, its handlers, its element, and its cards for as long as its name exists somewhere in the tree. So a move doesn't rebuild anything. A map keeps its tiles. A tool keeps its selection.
+
+A node's children ride along. When the embed `m2p7` moves from the canvas into the pointer, the map at `of` under it is still the same node: its parent is the same node and its name is unchanged. So the rule for continuity is:
+
+> A node is the same node as before if its name moved, or if its parent is the same node as before and its name is unchanged.
+
+If a move changes which cards reach the node, only those cards attach or detach. The rest stay.
+
+When a name disappears, the node is kept for a short time (500 ms) in case the name shows up in another container. This covers a move by someone else, which arrives as two document changes.
+
+If the same name is live in two places at once, because a document that contains it is placed twice, the first occurrence in tree order keeps its state. Each later occurrence is a separate node that starts fresh.
+
+### Cycles
+
+A document can end up inside itself. For example, you drop an embed of canvas A onto a map that sits on canvas A. The tree would then go on forever: A, embed, map, embed, A, and so on.
+
+The rule: when the walk reaches a document that's already on the path above, it stops there. The node exists and is drawn, but it has no children. It works like a shortcut to a parent folder: you see it, but it doesn't open inside itself.
+
+### References
+
+`value` can refer to nodes or documents. There are two kinds:
+
+| You want to refer to…        | Store…         | Example                                         |
+| ---------------------------- | -------------- | ----------------------------------------------- |
+| Data, wherever it's placed   | A document URL | A deck's `selected` card                        |
+| A particular thing on screen | A node path    | The inspector's `target`, a pointer's `holding` |
+
+When you read state, a document URL becomes a detached node, and a node path becomes the node at that path. Both are `Node` objects. A detached node has no `path` and no `parent`.
+
+References don't affect the tree. A node has one parent, no matter how many fields point at it.
+
+### What exists
+
+A node exists if the root reaches it through `children`. Nothing else makes it exist. Cards are dealt to the nodes that exist. When a node leaves the tree, its cards detach, its puts go, and its element is removed, after the grace period above.
+
+## State
+
+### Stored values and puts
+
+Every node answers `State`:
+
+```ts
+type State<T> = {
+  read(): Doc<T>; // the document with this node's puts applied
+  change(fn: (doc: Doc<T>) => void): void; // write the document
+  put(path: string, value: unknown): void; // a temporary value at a "/"-separated path
+  put(values: Record<string, unknown>): void;
+  overlays(): Record<string, Overlay>; // every path with a put
+  clone(): Node; // a new document with the same stored data; detached
+  persisted: boolean; // false for a computed node
+};
+```
+
+`read()` returns the stored document with puts layered on top. A later put wins at its path. A put goes away when the card that made it detaches, or when you put `undefined`.
+
+A put's path starts with the part it's in:
+
+```ts
+put("value/selected", true); // a temporary value
+put("value/x", 10); // a temporary position
+put("children/k3f9", beret.url); // a temporary child
+put(`tags/${berets.beret}`, true); // a temporary tag
+```
+
+`change` writes the document. The change is attributed to the card that made it.
+
+### Puts belong to a node
+
+Puts are keyed by node, not by document. When you put `value/selected` on a tool, only that placement of the tool is selected. When a map is embedded twice, a sheep on it is two nodes, and a put on one leaves the other alone.
+
+Presence shares the puts on your pointer with other tabs, keyed by path. See [Presence](#presence).
+
+### Computed nodes
+
+Some things follow from other data and don't need a document. A beret follows the shape that wears it. A card's tag token follows the card's descriptor.
+
+`NewComputedNode` makes a document that lives in memory in one tab:
+
+```ts
+const beret = request(NewComputedNode, {
+  tags: { [shapes.shape]: true, [tags.hat]: true },
+});
+```
+
+It returns a detached node with `persisted: false`. You place it with a put on a container's `children`, never by storing it. Every tab computes its own.
+
+Code that needs to treat computed nodes differently checks `persisted`:
+
+- Presence doesn't send a put that holds a computed node.
+- The select tool lifts a copy of a computed node instead of the node itself. `clone()` makes the copy a real document.
+
+### Placing, unplacing, and moving
+
+Three functions in `@cards/core` are the only code that writes `children`:
+
+```ts
+// stores a child; returns its name. No name given: a short random one
+place(container: Node, doc: Node, name?: string): string;
+
+// removes a child
+unplace(container: Node, name: string): void;
+
+// moves a child from one container to another, keeping its name
+move(from: Node, name: string, to: Node): void;
+```
+
+`place` throws `already-there` if the name is taken. `unplace` and `move` throw `nothing-there` if it isn't. `move` writes the destination first, then the source.
+
+A container calls `place` from its `Drop` handler. The select tool calls `move` to lift a node into the pointer. A behavior that shows a computed node uses `put` on `children/<name>` instead, since a put isn't a write.
+
+## Symbols
+
+A symbol is a string owned by a package:
+
+```ts
+const url = packageUrl(import.meta.url);
+const line = symbol(url, "line"); // "automerge:…#line"
+```
+
+A package owns the symbols that carry its URL. Two packages can both define `line` without colliding. The URL has no heads, so every version of a package has the same symbols.
+
+Source code never spells a symbol out. It imports it from the package that owns it:
+
+```ts
+import { tags as shapes, Drop } from "@cards/shapes";
+```
+
+A symbol is used in two ways. As a **tag**, it's stored on a document and says what the document is. As a **message**, it's sent to a node and asks it to do something. The same symbol can be both: a package could define `toggle` as a tag for things that toggle and as the message that toggles them. Nothing does this today.
+
+### Tags
+
+Tags are the `tags` part of a document: `tags/<tag>: true`. `hasTag(node, tag)` reads it. A node's tags decide which cards the dealer deals to it.
+
+A card gives a node another tag with a put on `tags/<tag>`, and the dealer deals that tag's cards to the node. When the put goes, the second card detaches on its own.
+
+Two tags are bare, because no package owns them: `card` and `user`.
+
+### Messages
+
+A message is a symbol with a request and a response type:
+
+```ts
+const Toggle = message<void, void>(symbol(url, "toggle"));
+```
+
+`node.on(message, handler)` registers a handler. `node.request(message, request)` sends one. Handlers on the node run newest first. If none answers, the message bubbles up to the parent, and so on to the root. A detached node sends straight to the root.
+
+A handler gets the request, a `next` function to pass it on, and the node that sent it:
+
+```ts
+on(Drop, ({ node, client, scale }, next, from) => {
+  if (!hasTag(node, tags.shape)) return next();
+  …
+});
+```
+
+Handlers live as long as the card that registered them.
+
+The host answers these messages at the root:
+
+| Message           | Answered by | Returns                                   |
+| ----------------- | ----------- | ----------------------------------------- |
+| `State`           | the backend | the node's state                          |
+| `NewNode`         | the backend | a detached node for a new document        |
+| `NewComputedNode` | the backend | a detached node for an in-memory document |
+| `Lookup`          | the backend | the nearest node with a tag, up the path  |
+| `Describe`        | the dealer  | the descriptor of the card that asks      |
+| `MyPointer`       | presence    | the pointer of the user at this keyboard  |
+| `Pointers`        | presence    | every pointer on this canvas, yours first |
+
+`Lookup` checks each ancestor and that ancestor's direct children. With `orCreate`, a missing node is created and placed under the root.
+
+## Cards
 
 ### Packages
 
-A package is a folder, published as one document with pushwork:
+A package is a folder, published as one Automerge document with pushwork. Its entry module exports the package's types, symbols, and card descriptors. The [loader spec](loader-spec.md) covers publishing and loading.
 
-```
-shapes/
-  package.json
-  tsconfig.json            self-contained, no extends
-  babel.config.json        the Solid and TypeScript presets
-  .pushworkattributes      which files are pinned with heads
-  src/index.ts             the entry module
-  src/canvas.tsx
-  .pushwork/config.json    the package's document URL, committed
-```
+Packages share contracts through imports and share behavior only through messages. Nothing a package can import reads or writes a document, except `place`, `unplace`, and `move`, which write only `children`.
 
-`package.json` is an ordinary npm manifest. `exports["."]` names the transpiled entry, and `packageManager` pins pnpm 12. The peer dependencies are the parts of the environment it uses, `@cards/core` and `solid-js`. `@cards/core` is also a dev dependency, linked from a `cards-core` checkout (`link:../../cards-core/core`), so the package type-checks against core's source. Everything that describes cards, tags, and messages is code in the entry module.
+### Card descriptors
 
-```json
-{
-  "name": "@cards/shapes",
-  "version": "0.1.0",
-  "type": "module",
-  "packageManager": "pnpm@12.15.0",
-  "exports": { ".": "./dist/index.js" },
-  "types": "./dist/index.d.ts",
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "build": "babel src -d dist -x .ts,.tsx --copy-files --delete-dir-on-start && tsc && cards-importmap",
-    "push": "pnpm build && pushwork sync"
-  },
-  "peerDependencies": { "@cards/core": "*", "solid-js": "*" },
-  "devDependencies": {
-    "@babel/cli": "^7.28.0",
-    "@babel/core": "^7.28.0",
-    "@babel/preset-typescript": "^7.27.0",
-    "@cards/core": "link:../../cards-core/core",
-    "babel-preset-solid": "^1.9.16",
-    "solid-js": "^1.9.17",
-    "typescript": "^7.0.2"
-  }
-}
-```
-
-`pnpm install` and then `pnpm push` publish a package: transpile, emit declarations, generate the import map, and sync with pushwork. See [Publishing](loader-spec.md#publishing).
-
-### Entry module
-
-The entry module is a package's public surface. It exports types, tags, messages, and card descriptors. It does not contain behavior.
-
-```tsx
-// packages/shapes/src/index.ts
-import {
-  card,
-  message,
-  packageUrl,
-  tag,
-  type Node,
-  type Tagged,
-} from "@cards/core";
-import type { Viewed } from "@cards/core/render";
-
-export const url = packageUrl(import.meta.url);
-
-export const tags = {
-  shape: tag(url, "shape"),
-  surface: tag(url, "surface"),
-  canvas: tag(url, "canvas"),
-};
-
-export type Point = { x: number; y: number };
-export type Shape = Tagged & Viewed & { x: number; y: number; scale?: number };
-export type Container = Tagged & { children: Node[]; takes?: string };
-
-export type DropRequest = {
-  node: Node;
-  client: Point;
-  scale: number;
-  pointer?: Point;
-};
-
-export const Drop = message<DropRequest, Node["url"] | undefined>(
-  `${url}#drop`,
-);
-
-export const cards = [
-  card({
-    id: "canvas",
-    title: "Canvas",
-    description:
-      "A surface in plain pixels. Positions its children; each child draws itself.",
-    matches: tags.canvas,
-    accepts: [Drop],
-    behavior: () => import("./canvas.js"),
-  }),
-];
-```
-
-`packageUrl` reads the package's Automerge URL from the module's own URL; see [Loading code](#loading-code). The result has no heads, so two versions of the same package that are loaded at the same time produce equal tags and messages.
-
-### Cards
-
-A card document names a package and a descriptor in one string, `tag(package, id)`. Title, description, and tag come from the descriptor at run time, so the document stays small:
-
-```ts
-type Card = Tagged & {
-  card?: string; // `${packageUrl}#${descriptor id}`
-  example?: Node; // an instance to drag out as a copy
-};
-```
-
-The reference is a string rather than a node. A node would make the package document a child in the tree, and every walk would descend into its files. Like a tag, a URL with a fragment isn't a valid Automerge URL, so the backend leaves it a string.
-
-The `card` card (the one that renders every card) and the deck read the descriptor with `request(Describe)`, which the dealer answers at the root for the card that asks.
-
-A descriptor can make its card's example. `example` gets a node to send from and returns a new node, which the seed stores in the card document:
-
-```ts
-type CardDescriptor = {
-  …
-  example?: (node: Node) => Node;
-};
-
-card({
-  id: "deck",
-  …
-  example: ({ request }) =>
-    request(NewNode, {
-      "@tags": { [shapes.shape]: true, [tags.deck]: true },
-      x: 0,
-      y: 0,
-      children: [],
-    } satisfies Deck),
-});
-```
-
-### Creating nodes
-
-`NewNode` creates a document and answers with its node in the requester's scope. The backend answers it at the root:
-
-```ts
-const NewNode = message<Record<string, unknown>, Node>("core/new-node");
-```
-
-The document is stored at once and the change is attributed to the card that sent the message. Nodes anywhere in the initial value, inside plain objects and arrays, are stored as their URLs, so a document can be created with others nested in it:
-
-```ts
-request(NewNode, {
-  "@tags": { user: true },
-  pointer: request(NewNode, { "@tags": { … }, x: 0, y: 0 }),
-});
-```
-
-A new node has no parent until a document references it, for example after `Drop` or `d.children.push(node)` inside a change. One that is never placed stays in the repo, unreferenced. `State.clone()` and `Lookup` with `orCreate` create documents the same way.
-
-### Tags and messages
-
-Documents store fully qualified tags. A tag such as `automerge:3RFhQ…#shape` is put at `@tags/automerge:3RFhQ…#shape`. The separator is `#` rather than `/` because `State.put` splits paths on `/`, and because a string with a fragment is not a valid Automerge URL, so `hydrate` won't turn it into a `Node`.
-
-Host-level tags that don't belong to any package stay bare: `card` and `user`. The `template` tag moves into the `tools` package, which holds the select and card behaviors, because it's their protocol.
-
-Source code never spells a qualified tag. It imports the tag from the package that owns it:
-
-```tsx
-import { tags as shapes } from "@cards/shapes";
-
-request(NewNode, {
-  "@tags": { [shapes.shape]: true, [tags.line]: true },
-  …
-} satisfies Line);
-```
-
-### Dependencies between packages
-
-A package depends on another by listing its Automerge URL in `package.json`:
-
-```json
-{
-  "name": "@cards/lines",
-  "dependencies": {
-    "@cards/shapes": "automerge:atho8JGpgB4mZnR6pP4LYffh1XT",
-    "@cards/tools": "automerge:qFzm3sVaVsAqZ3ZjdhCSNzkQoJK"
-  }
-}
-```
-
-pnpm installs it from the document through the loader's resolver, which every project on the machine gets as pnpm's `globalPnpmfile`. `tsc` checks the dependent against the dependency's published `dist/*.d.ts`, and the lockfile records the heads. What makes it a package dependency is the `automerge:` specifier, not the name; a neighbouring folder is never linked. Source imports the dependency by its alias, as it would import an npm package:
-
-```tsx
-import { Drop, tags as shapes, type Point } from "@cards/shapes";
-```
-
-Dependencies are live at run time: the loader pins every package in a closure to its latest heads when it loads, and reloads when any of them changes. This is the right default for tags and messages, because the sender and the handler must agree on the current definition, not the one the sender was type-checked against.
-
-Packages form a DAG, because a package has to be published before another package can install it.
-
-### Loading code
-
-The dealer gets package code from the [package loader](loader-spec.md). `loader.watch(url, callback)` delivers a package's entry module and delivers it again whenever the package or anything it depends on changes. Each module is loaded natively from a pinned same-origin URL that the service worker serves from the repo.
-
-The host provides the environment, the bare specifiers every package shares with the page: `solid-js`, `solid-js/web`, `solid-js/store`, `@automerge/automerge-repo`, `@cards/core`, and `@cards/core/render`. A package must use the host's instance of these, or reactivity breaks. The loader's Vite plugin emits each one as a module that re-exports the host's instance, and `createLoader` installs the import map for them. npm dependencies such as `maplibre-gl` belong to the package that uses them and load from jspm.io through that package's import map.
-
-`@cards/core` reads the package from the loader's pinned prefix with its own copy of `packageUrl`, so it doesn't depend on the loader:
-
-```ts
-export function packageUrl(moduleUrl: string): AutomergeUrl {
-  const [segment] = new URL(moduleUrl).pathname.split("/")[1].split("@");
-  return decodeURIComponent(segment).split("#")[0] as AutomergeUrl;
-}
-
-export function tag(pkg: AutomergeUrl, name: string): string {
-  return `${pkg}#${name}`;
-}
-```
-
-Pinned URLs give each version its own module instance. Stripping the heads in `packageUrl` gives every version the same tags and messages. Code identity is pinned; protocol identity is not.
-
-### Sharing behavior through messages
-
-Nothing a package can import may read or write a document or walk the tree. The helpers in `container.tsx` moved as follows:
-
-| Before                                 | Now                                                                                               |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `placeIn(state, node, …)`              | each container adds to its own `children` when it handles `Drop`                                  |
-| `removeFrom(state, node)`              | the select tool takes a lifted node out of its container                                          |
-| `taker(from, node)`                    | a local function in the select tool that walks `.parent` and reads `takes`                        |
-| `myPointer(node)`                      | `request(MyPointer)`, answered at the root by presence                                            |
-| reading `me` and `present` on the root | `request(Pointers)`, answered at the root by presence                                             |
-| `View`, `Child`                        | Stay as imports, in `@cards/core/render`                                                          |
-| `hit`, `isControl`                     | Gone: the pointer reports the url of the node under it, and a control keeps its press itself      |
-| `elementOf`, `elementAt`               | Gone: a card measures only its own elements, through refs, and the pointer finds what is under it |
-| `Pan`                                  | Gone: the map pans itself while the select tool is selected                                       |
-
-`View` and `Child` have no document state and no version ambiguity, so they belong with `solid-js` rather than with the protocol. The `view` field that `View` reads is a runtime contract owned by `@cards/core/render` (`Viewed`), not a field that `canvas.tsx` happens to declare. `MyPointer` and `Pointers` answer with nodes in the requester's scope, so cards never read users.
-
-`children` is plain data: `walk` and `childNodes` find nodes in any field. A canvas, a map, or a deck declares what it takes with `takes`, and handles `Drop` by converting the screen point into its own terms, through a ref to its own frame, and adding the node to its own `children`. It answers with its url to say the node is in; a `Drop` nobody answers bubbles up to the root canvas.
-
-```tsx
-// packages/shapes/src/canvas.tsx
-export default (({ url, request, on }) => {
-  const canvas = () => request(State).read<Canvas>();
-  let frame: HTMLElement | undefined;
-
-  request(State).put({
-    [`@tags/${tags.surface}`]: true,
-    takes: tags.shape,
-    view: () => <CanvasView … frame={(el) => (frame = el)} />,
-  });
-
-  on(Drop, ({ node, client, scale }) => {
-    const origin = frame!.getBoundingClientRect();
-    request(State).change((d: Canvas) => {
-      if (!d.children) d.children = [];
-      d.children.push(node);
-    });
-    const child = canvas().children.find((c) => c.url === node.url)!;
-    child.request(State).change((d: Shape) => {
-      d.x = client.x - origin.left;
-      d.y = client.y - origin.top;
-      d.scale = scale;
-    });
-    return url;
-  });
-}) satisfies Behavior;
-```
-
-The other half of a move is the select tool's: on lift it removes the node from its container's `children`, the one place a node leaves one. A template stays where it is and the tool lifts a clone instead.
-
-The container's `accepts` field is renamed `takes` so that `accepts` is free for messages; see the next section.
-
-### Drag and drop
-
-Only the pointer looks at the whole page's DOM. Every other card measures only its own elements, through refs. With every pointer event the pointer reports the url of the innermost node under it (the nearest `data-node`, looking through anything held), which a tool binds in its own scope with `nodeIn`:
-
-```ts
-type PointerInput = {
-  client: Point;
-  target: Node["url"]; // the root, if nothing else is under the pointer
-  grab?: { at: Point; scale: number }; // on PointerDown: where on the target, in its own pixels, and its scale on screen
-  claimedBy?: Node["url"];
-};
-```
-
-Who gets a press is settled by claims, and the pointer knows nothing about tools:
-
-- **A press the page keeps.** A view that handles a press itself calls `preventDefault` on `pointerdown`, and the pointer doesn't emit it. The map does this to pan.
-- **A claim for one press.** A `PointerDown` or `PointerMove` handler returns its url instead of calling `next()`. The pointer puts it as `claimedBy`, captures the pointer, and swallows the click that ends the press. The select tool and the pen claim on the first move past a small threshold, not on the press, so a click still reaches what was clicked, buttons included.
-- **A standing claim.** A tool puts its url as `claimedBy` on the pointer for as long as it wants every press. The pointer then takes each press before the page sees it, except presses on the claiming tool's own view, and swallows its click. The inspector holds one while it is selected, so it can pick a button without pressing it. Picking switches it off.
-
-The pointer listens on the window, in the capture phase for standing claims and in the bubble phase for everything else. Solid delegates events to the document, so only the window sees a press before and after every view's handlers.
-
-A drag is shared through the pointer's puts, which presence sends to everyone with the canvas open: `holding`, `grip` (where the node was grabbed, its scale, and `over`, the container that would take it), and `position`, on the root surface, which means the same in every tab. The pointer card also puts `client`, a function that turns `position` into this screen's coordinates. Like a view it stays in its tab, so every tab works it out for every pointer it shows.
-
-A container shows a drop before it happens by reading `Pointers`: for each pointer whose `grip.over` is itself, it converts `client()` through its own ref. The deck opens a slot at the row under it and the map highlights, for anyone's drag.
-
-The select tool owns the gesture:
-
-1. **Press.** Remember the target and `grab`, without claiming.
-2. **Lift**, past four pixels. Claim the press, take the node out of its container (or clone a template), and put it in the pointer's hand. The root can't be lifted.
-3. **Move.** Walk up from the target to the nearest container whose `takes` the held node carries; put it in `grip.over`.
-4. **Release.** Send `Drop` to `grip.over`, or to the root.
-
-### Declaring accepted messages
-
-A card descriptor lists the messages its behavior may register handlers for:
+A card descriptor describes one card:
 
 ```ts
 card({
   id: "pen",
-  …
-  accepts: [PointerDown, PointerMove, PointerUp],
+  title: "Pen",
+  description: "A tool that draws lines onto whatever surface you press.",
+  matches: tags.pen, // the tag it's dealt to
+  accepts: [PointerDown, PointerMove, PointerUp], // every message it handles, on any node
   behavior: () => import("./pen.js"),
+  example: (node) => node.request(NewNode, { … }), // an instance to show on the card
 });
 ```
 
-The declaration covers handlers on any node, not only the card's own node. The pen registers `PointerDown` on the pointer, so it declares `PointerDown` even though it never handles that message on itself. It sends `Toggle` and `Drop` but handles neither, so it declares neither. Sending is not restricted.
+A card document is tagged `card` and names its descriptor in `value.card`, as `symbol(package, id)`. The title, description, and tag come from the descriptor at run time, so the document stays small.
 
-Enforcement happens in `Node.on`. The dealer passes the descriptor to `attach`, and the scope records its accepted messages:
+The card's example is its child at `children/example`. Its tag token is a put child at `children/token`. The card draws both in its preview. Both are templates: dragging one out lifts a copy.
 
-```ts
-attach = (behavior: Behavior, card?: { url: AutomergeUrl; accepts: Message<any, any>[] }) =>
-  createRoot((dispose) => {
-    const scope: Scope = {
-      process: card?.url,
-      accepts: card && new Set(card.accepts),
-      owner: getOwner(),
-      nodes: new Map(),
-    };
-    …
-  });
+### Where a card reaches
 
-on = <Req, Res>(msg: Message<Req, Res>, handler: Handler<Req, Res>): void => {
-  const { accepts, process } = this.scope;
-  if (accepts && !accepts.has(msg))
-    throw new Error(`card ${process} handles ${msg} without accepting it`);
-  …
-};
+A card is dealt downwards. It reaches the nearest ancestor that doesn't deal through, and everything under that ancestor.
+
+A node deals through by putting `value/dealsThrough: true`. A deck does, so the cards in it reach the deck's container. An embed does, so a deck on an embedded map reaches the canvas the embed sits on. A pointer does, so a card in your hand reaches everything, until it's dropped.
+
+| The card is…                   | It reaches…                             |
+| ------------------------------ | --------------------------------------- |
+| in the deck on the root canvas | everything                              |
+| in a deck on an embedded map   | the canvas the embed sits on, and below |
+| lying on an embedded canvas    | that canvas and everything on it        |
+| in someone's hand              | everything, until it's dropped          |
+
+Within its reach, a card matches every node that carries its `matches` tag.
+
+### Attaching
+
+The dealer keys each attachment by the node, the card, and the descriptor's version. It attaches when a key appears and detaches when it goes. Because a moved node keeps its key, a move doesn't touch its attachments unless its reach changes.
+
+A new version of a package means new descriptors. The dealer detaches every attachment made from the old version and attaches again with the new code.
+
+### Accepted messages
+
+A behavior can only register handlers for the messages its descriptor accepts. `Node.on` throws otherwise, and the dealer reports the card as failed. Sending isn't restricted.
+
+The declaration covers handlers on any node. The pen handles `PointerDown` on the pointer, so it declares `PointerDown`.
+
+## Rendering
+
+`@cards/core/render` exports `View` and `Child`. `View` shows a node's view. It builds the element once per node and moves it to wherever the node is shown, so a node that moves between containers keeps its elements, transitions, and focus.
+
+A card draws a node by putting `value/view`:
+
+```tsx
+request(State).put("value/view", () => <CanvasView … />);
 ```
 
-The dealer reports the error as a failed card. Host behaviors attach without a descriptor and are unrestricted.
+A node that no card draws shows as a box with a question mark.
 
-The check is runtime only. `card()` doesn't narrow the type of `on`, because message types are structurally interchangeable strings; see [Generic `Node`](#open-questions).
+`Child` wraps `View` with the `data-node` attribute set to the node's path. That's how the pointer finds what's under it.
 
-The registry records which card registered each handler (`Entry.process`). That makes two things possible that weren't before:
+## Presence
 
-- The inspector can show, per node, which messages are answered and by which card.
-- `dispatch` can distinguish "bubbled past nodes that don't declare this message" from "reached a node that declares it and nothing is registered", and warn about the second in development.
+Presence shares the puts on your pointer with everyone who has the canvas open, as ephemeral messages on the root document. Each message lists the puts by node path. Other users' puts arrive as ordinary puts on the nodes at those paths.
+
+Presence drops two kinds of values before sending: functions, such as views, and computed nodes. Every tab computes its own.
+
+Presence also puts each present user's pointer into the root's `children`, and answers `MyPointer` and `Pointers`. A pointer's name is derived from the user's document URL, so its path is the same in every tab.
 
 ## Packages in this repository
 
-| Package         | Depends on                       | Cards                                  | Owns                                                                 |
-| --------------- | -------------------------------- | -------------------------------------- | -------------------------------------------------------------------- |
-| `@cards/shapes` |                                  | canvas                                 | `Shape`, `Container`, the container protocol                         |
-| `@cards/tools`  | `shapes`                         | card, pointer, tool, select, inspector | pointer events, `Toggle`, the `tool`, `default`, and `template` tags |
-| `@cards/lines`  | `shapes`, `tools`                | line, pen                              | `Line`                                                               |
-| `@cards/deck`   | `shapes`, `tools`                | deck                                   | `Deck`                                                               |
-| `@cards/map`    | `shapes`, `tools`, `maplibre-gl` | map                                    | `MapShape`, `Camera`                                                 |
-
-Examples: select and inspector are a bare shape with their tool's tag, the pen a shape tagged `pen`, the line a zigzag, the deck empty, and the map 300 by 200 pixels over Berlin. Canvas, card, pointer, and tool have none.
+Everything in this section is userspace. A different set of packages could put different things on the same core.
 
 ### `shapes`
 
-Owns the container protocol and the canvas. Its entry module is shown in [Entry module](#entry-module), and the canvas in [Sharing behavior through messages](#sharing-behavior-through-messages).
+Owns positions, embeds, and the container protocol.
 
-### `lines`
+#### Shapes and embeds
 
-Depends on `shapes` and `tools`. Owns the line shape and the pen tool.
+A **shape** carries its own position:
 
-```tsx
-// packages/lines/src/index.ts
-import { card, NewNode, packageUrl, tag } from "@cards/core";
-import { tags as shapes, type Point, type Shape } from "@cards/shapes";
-import { PointerDown, PointerMove, PointerUp } from "@cards/tools";
-
-export const url = packageUrl(import.meta.url);
-export const tags = { line: tag(url, "line"), pen: tag(url, "pen") };
-
-export type Line = Shape & { points: Point[]; color: string; width: number };
-
-export const cards = [
-  card({
-    id: "line",
-    title: "Line",
-    description: "Draws a polyline through its points.",
-    matches: tags.line,
-    accepts: [],
-    behavior: () => import("./line.js"),
-    example: ({ request }) =>
-      request(NewNode, {
-        "@tags": { [shapes.shape]: true, [tags.line]: true },
-        x: 0,
-        y: 0,
-        points: [ … ], // a zigzag
-        color: "#1d1d1f",
-        width: 3,
-      } satisfies Line),
-  }),
-  card({
-    id: "pen",
-    title: "Pen",
-    description: "A tool that draws lines onto whatever surface you press.",
-    matches: tags.pen,
-    accepts: [PointerDown, PointerMove, PointerUp],
-    behavior: () => import("./pen.js"),
-    example: ({ request }) =>
-      request(NewNode, {
-        "@tags": { [shapes.shape]: true, [tags.pen]: true },
-        x: 0,
-        y: 0,
-      } satisfies Shape),
-  }),
-];
+```ts
+type Shape = {
+  x: number; // in the surface's terms: pixels on a canvas, longitude on a map
+  y: number;
+  scale?: number;
+  order?: number; // stacking, lowest first
+  glide?: number; // milliseconds a change of position animates over
+};
 ```
 
-```tsx
-// packages/lines/src/pen.tsx
-import { createMemo } from "solid-js";
-import {
-  hasTag,
-  MyPointer,
-  NewNode,
-  rootOf,
-  State,
-  type Behavior,
-  type Node,
-} from "@cards/core";
-import { Drop, tags as shapes } from "@cards/shapes";
-import { PointerDown, PointerMove, PointerUp } from "@cards/tools";
-import { tags, type Line } from "./index.js";
+A surface reads the position from the shape and draws it there. A surface writes a shape's position in `Drop` and `Move`, and nothing else in the shape's document.
 
-// Draws only once the pen moves, so a click still reaches what was clicked, buttons included
-export default (({ url, parent, request }) => {
-  const pointer = createMemo(() => request(MyPointer));
-  …
-  // the surface the pen went down on decides where the line lives
-  function start() {
-    const { from, on } = self().press!;
-    const surface = surfaceOf(on) ?? rootOf(parent!);
-    const line = request(NewNode, {
-      "@tags": { [shapes.shape]: true, [tags.line]: true },
-      x: 0,
-      y: 0,
-      points: [{ x: 0, y: 0 }],
-      color: "#1d1d1f",
-      width: 2,
-    } satisfies Line);
-    surface.request(Drop, { node: line, client: from, scale: 1 });
-    request(State).put("stroke", line.url);
-  }
-}) satisfies Behavior;
+Because the position is in the shape's document, a shape is one thing in one place. Place a sheep twice and both copies sit at the same spot. To show the same thing twice, embed it.
 
-function surfaceOf(node: Node): Node | undefined {
-  for (let n: Node | undefined = node; n; n = n.parent)
-    if (hasTag(n, shapes.surface)) return n;
-  return undefined;
-}
+An **embed** is a shape that shows something with no position of its own: a map, a canvas, a deck, a card. It has a size and one child, named `of`:
+
+```ts
+type Embed = Shape & {
+  width: number;
+  height: number;
+};
 ```
+
+```
+canvas
+  ├─ k3f9  sheep   value: { x: 10, y: 20 }
+  └─ m2p7  embed   value: { x: 50, y: 0, width: 400, height: 300 }
+             └─ of  map     value: { camera: … }
+```
+
+The embed card draws its `of` child clipped to its size. The map inside knows nothing about where it is. Two embeds of the same map have two sizes, two positions, and two nodes at `of`, each with its own puts.
+
+Things that aren't shapes, like decks, cards, and tools, don't carry a position. A canvas that takes one wraps it in an embed. A deck that takes one takes it bare.
+
+#### The container protocol
+
+A container says what it takes with `takes`, one put per tag:
+
+```ts
+request(State).put(`value/takes/${shapes.shape}`, true);
+```
+
+The select tool walks up from the node under the pointer to the nearest node that takes the held node. A held embed counts as both itself and its `of`. The container gets the `Drop` with the one it takes:
+
+```ts
+type DropRequest = {
+  node: Node; // the node being dropped
+  client: Point; // where its origin goes, in screen pixels
+  scale: number; // its scale on screen
+  pointer?: Point; // where the pointer is, if not at the origin
+};
+const Drop = message<DropRequest, string | undefined>(symbol(url, "drop"));
+```
+
+A surface converts the screen point into its own terms, writes the position into the shape, calls `place`, and answers with the name. A `Drop` that nobody answers bubbles up to the root canvas, which takes anything: a shape as it is, anything else in a new embed.
+
+Several cards can take drops on one node. A map takes shapes, and the shape card on the map takes tag tokens. Each handler calls `next()` for anything that isn't its kind.
+
+`Move` asks a surface to move a shape by the shape's own pixels. The canvas adds them. The map projects them:
+
+```ts
+const Move = message<{ node: Node; by: Point }, string | undefined>(
+  symbol(url, "move"),
+);
+```
+
+#### Stacking
+
+Shapes stack by `order`, lowest first. `ordered(node)` returns a surface's children sorted by `order`, then by name, so every tab stacks ties the same way. `orderAt(shapes, index)` returns the order that puts a shape at an index, between its neighbors.
+
+A drop lands on top of a canvas or a map.
+
+#### The canvas
+
+A surface in plain pixels. It draws the children tagged `shape`, in order, and pointers above all of them. Other children exist in the tree and get cards, but aren't drawn. This keeps a tool's selection object off the canvas.
+
+The root is a canvas. A canvas anywhere else is embedded.
+
+### `tools`
+
+Owns the pointer, the tools, the card view, and the `template` and `token` tags.
+
+#### Pointers
+
+Each user's pointer is a node under the root. The pointer card turns presses on the canvas into pointer events that say which node is under the pointer, as a path.
+
+While you drag something, it's a child of your pointer. The pointer isn't a surface: it draws its children under the cursor, ignoring their position, so a dragged shape brings its beret along. `holding` in the pointer's `value` is a path reference to the same node, for cards that want to know what's held without walking the pointer's children. The pointer deals through.
+
+#### The select tool
+
+The select tool owns the drag gesture:
+
+1. **Press.** Remember the node under the pointer and where it was grabbed. Don't claim the press yet, so a click still reaches what you clicked.
+2. **Lift.** After four pixels, claim the press. If the node is the `of` of an embed, lift the embed instead, so grabbing a map's background lifts the map. If the node is a template or isn't persisted, clone it and `place` the clone into the pointer. Otherwise `move` it into the pointer. The root can't be lifted.
+3. **Move.** Walk up from the node under the pointer to the nearest node that takes the held node, or its `of` if it's an embed. Put it as `value/grip/over`.
+4. **Release.** Send `Drop` to `grip.over` with the node it takes, or to the root. When a container takes the `of` out of an embed, the embed is left behind in the pointer and unplaced.
+
+### `deck`
+
+Holds cards. It draws the children tagged `card` as a list, and shows the selected one. A drop lands at the slot under the pointer. The deck deals through.
+
+A deck isn't a shape. A deck on a canvas is embedded.
 
 ### `map`
 
-Brings its own npm dependency. `maplibre-gl` loads from jspm.io through the package's import map, and MapLibre finds its worker next to its own module URL. The map card adopts MapLibre's stylesheet for as long as it is attached, following the loader's [package conventions](loader-spec.md#package-conventions).
+A surface in longitude and latitude. The camera is in the map's document. Dragging the background pans, but only while the select tool is selected.
 
-Dragging the map's background pans it, but only while the select tool is selected: the map finds the select tool with `Lookup` by its tag and reads `selected`, so it imports `tags` from `@cards/tools` at run time. While panning it calls `preventDefault` and captures the pointer itself, so no tool sees the press. With any other tool selected the press goes to the tool, so the pen draws on the map. Its children and MapLibre's controls keep their presses.
+A map isn't a shape. A map on a canvas is embedded, and the embed gives it its size.
+
+### `beret` and `france`
+
+The beret card is dealt to anything tagged `beret`. It makes a computed hat, keeps the hat's position just above the target's, and puts the hat into the target's parent:
+
+```ts
+export default ((target) => {
+  const { request } = target;
+  const beret = request(NewComputedNode, {
+    tags: { [shapes.shape]: true, [tags.hat]: true },
+  });
+  const name = newName();
+
+  createEffect(() => {
+    const {
+      x,
+      y,
+      scale,
+      order = 0,
+      glide,
+    } = request(State).read<Shape>().value;
+    beret.request(State).put({
+      "value/x": x,
+      "value/y": y,
+      "value/scale": scale,
+      "value/order": order + 0.5,
+      "value/glide": glide,
+    });
+  });
+
+  createEffect(() => {
+    const container = target.parent;
+    if (!container) return;
+    container.request(State).put(`children/${name}`, beret.url);
+    onCleanup(() =>
+      container.request(State).put(`children/${name}`, undefined),
+    );
+  });
+}) satisfies Behavior;
+```
+
+The hat card draws anything tagged `hat`. `beret` and `hat` are different tags: `beret` means "wears one" and `hat` means "is one", so a beret doesn't get a beret.
+
+If you drag the beret, the select tool sees `persisted: false` and lifts a copy. The copy is a real document tagged `hat`. The shape keeps its beret.
+
+The French card is dealt to anything tagged `french`. While the node sits on a map and its position is inside France, the card puts the `beret` tag on it:
+
+```ts
+createEffect(() =>
+  request(State).put(`tags/${berets.beret}`, inFrance() || undefined),
+);
+```
+
+The put is per node. If the map is embedded twice, each embed's sheep decides for itself.
 
 ## Host
 
 ### `@cards/core`
 
-- `packageUrl`, `tag`, `card`, and the `Card` and `CardDescriptor` types.
-- `Describe`, answered by the dealer; `MyPointer` and `Pointers`, answered by presence; `NewNode`, answered by the backend.
-- `accepts` on `Scope` and the check in `Node.on`.
-- The registering process on each registry `Entry`.
-- `@cards/core/render`, as described in [Sharing behavior through messages](#sharing-behavior-through-messages).
+- `Node`, with `url`, `path`, `name`, `parent`, `on`, `request`, and `attach`.
+- `nodeIn(scope, path)` and `docIn(scope, url)`.
+- `Doc`; `place`, `unplace`, and `move`.
+- `State`, `NewNode`, `NewComputedNode`, `Lookup`, `Describe`, `MyPointer`, and `Pointers`.
+- `childNodes(node)`, `walk(root)`, `rootOf(node)`, and `hasTag(node, tag)`.
+- `symbol`, `message`, `card`, and `packageUrl`. `tag` stays as an alias of `symbol` until the packages move over.
+- `@cards/core/render`, with `View` and `Child`.
 
-There is no `Node.create`. Documents are only created through the backend, which stores them at once.
+The backend keeps documents by URL and everything else (puts, handlers, elements) by node. It walks the tree from the root, makes a node for each name in `children`, cuts cycles, carries a node's state when its name moves or its parent moves, and applies the grace period when a name disappears.
 
 ### `site/src/dealer.ts`
 
-- `dealer(loader)` returns the root behavior. For each node tagged `card`, it splits `card` into a package URL and a descriptor id, watches the package through the loader, and looks up the descriptor in the module's `cards`.
-- It matches nodes against the descriptor's `matches` tag, as before.
-- It attaches with the descriptor, so that `accepts` is enforced.
-- Attachments are keyed on the descriptor's identity, replacing `hash(source)`. A new module from the loader means new descriptors, so every attachment made from the old module is disposed and re-made.
-- Attaching is asynchronous: the descriptor's `behavior()` imports the behavior module on first use. If the attachment is disposed before the module arrives, it never attaches.
-- It answers `Describe` at the root with the descriptor of the card that asks.
+Walks the tree, finds every card, works out each card's reach from `dealsThrough`, and attaches descriptors to the nodes they match. Watches each card's package through the loader and re-attaches on a new version.
 
 ### `site/src/presence.ts`
 
-Answers `MyPointer` and `Pointers` at the root, with nodes in the requester's scope.
+Shares pointer puts by path. Places each present user's pointer under the root.
 
 ### `site/src/main.tsx`
 
-Opens the repo with Subduction (IndexedDB storage, a `BroadcastChannel` between tabs, and the Subduction sync server) and creates the loader with the environment from the Vite plugin. It opens the space named in the URL hash, or seeds a new one:
+Opens the repo and the loader. Opens the space in the URL hash, or seeds a new one: a root canvas, the select tool, the pen, the inspector, an embedded deck with every card from every package, and an embedded map. This is the one place in the host that names tags from packages.
 
-1. Create the canvas document with the repo, and attach the backend to it, so that `NewNode` has a root to be answered at.
-2. For each package, `loader.load` its entry module and create a card document per descriptor in `cards`, with `card: tag(package, id)` and the descriptor's `example(root)`.
-3. Lay out the canvas: the select tool (the default), the pen, the inspector, a deck holding every card, and a map of Berlin.
+## Work plan
 
-The package URLs come from `virtual:cards/packages`, provided by a plugin in `site/vite.config.ts` that reads each `../../cards-packages/*/.pushwork/config.json` at build time, from a checkout next to this repository. A folder that was never published isn't listed. The cards on the deck need no site change: a new package or a new descriptor shows up in the next seeded space. The layout is the one site-specific part. It names the tags it needs by package folder: `shapes` for the canvas, `tools` for the pointer and tools, `lines`, `deck`, and `map`.
+Each step runs on its own. Packages are pushed after each step.
 
-The user is a document created with `NewNode`, with their pointer nested in it, and is kept per tab in `sessionStorage`.
+1. **Parts.** Documents become `{ value, children, tags }`. `children` is a record of URLs by name. `shapes` adds the embed; the deck and the map stop being shapes and are embedded. `place`, `unplace`, and `move` are the only writers of `children`. Node identity stays by URL for now.
+2. **Paths.** A node is its path. The pointer, presence, and the inspector use paths. Two placements of one document become two nodes.
+3. **Per-node state.** Puts, handlers, elements, and attachments are keyed by node. A moved node and its descendants keep them. The grace period replaces the dealer's linger.
+4. **Reach.** The dealer deals downwards, through nodes that deal through.
 
-### Build
+## Compatibility
 
-`site/vite.config.ts` adds the loader plugin from `@cards/loader/vite` with the environment. The plugin serves the service worker in development and emits it, together with one module per environment specifier, in the build.
-
-### TypeScript
-
-In `cards-core`, `loader`, `core`, and `site` each have a `tsconfig.json` that extends `tsconfig.base.json` and a `typecheck` script; the root runs `pnpm -r typecheck`. A package in `cards-packages` has a self-contained `tsconfig.json` that also emits its declarations. It resolves `@cards/core` through its linked dev dependency, to core's source, and other packages through `node_modules`, as pnpm installed them from their documents. Published declarations import `@cards/core` by name, so a dependent checks them against its own copy of core.
-
-## Migration
-
-Existing canvases are not migrated: their card documents hold `source`, and their tags are bare. A new canvas is seeded from the published packages. To change a package, edit its folder and run `pnpm install && pnpm push` in it. Open pages pick up the new version without a reload. A new dependency goes into `package.json` as the dependency's document URL, under its `@cards/<name>` alias; push the dependency first.
+Spaces created before this change aren't supported. Open the page without a URL hash to seed a new one.
 
 ## Open questions
 
-**Pinned dependencies.** The page always runs every package at its latest heads, while `tsc` checks against the heads in the lockfile. A package can therefore run against a newer contract than it was checked against, and the two can disagree on a message's request shape. Running the locked heads instead would remove the drift, but then two packages could run different versions of one dependency, with the same tags and messages and different code. Decide whether to allow this at all.
+**Pinned dependencies.** The page runs every package at its latest version, while `tsc` checks against the version in the lockfile. A package can run against a newer contract than it was checked against.
 
-**Who answers the handoff.** With several tabs open, every tab that holds the repo answers every request. The first `cache.put` wins and the rest are redundant. This is harmless but wasteful. Options are a leader election over the same channel, or moving the repo to a shared worker as Patchwork does.
+**Typed tags.** `tags` is `Record<string, string>`. A literal type per tag would let the compiler reject unknown tags.
 
-**Typed tags.** `tags` is `Record<string, string>` at the type level. A literal type per tag would let `hasTag` and `matches` reject unknown tags at compile time. Not needed until there's an in-app editor.
-
-**Generic `Node`.** Whether to make `Node` generic in its accepted messages, so that `pointer.on(Drop, …)` is a type error in a card that doesn't declare `Drop`. Messages would need a nominal brand first, since today any two messages with compatible request and response types are interchangeable to the type checker. The runtime check covers this; the type-level version touches every helper that returns a node.
-
-## Alternatives considered
-
-**A virtual `package` module.** The compiler injects a module that exports the package's URL and tags. Rejected because it requires a compile step that knows which package a file belongs to, and because it can't be expressed in the repository's TypeScript without a shim. Deriving the URL from `import.meta.url` needs neither.
-
-**A manifest in `package.json`.** Cards, tags, and messages described in JSON, with source aliases such as `"shapes/shape"` resolved against `dependencies`. Rejected because it introduces a second namespace that must be kept in sync with the code, and because message types can't be expressed in JSON. Descriptors in the entry module give the same information with one source of truth.
-
-**Per-card `imports` map.** Each card document lists the cards it imports, by alias, and `require` resolves aliases through the document. Rejected because it ties dependencies to cards rather than to code, so two cards from the same codebase would declare the same imports twice.
-
-**Keep `placeIn` as an import.** Simplest, but it leaves two ways to share behavior and means the host decides what a container is.
-
-**`Place`, `Remove`, and `Taker` as messages.** A generic container card, applied to anything tagged `container`, answered all three and was the one writer of `children`. Rejected because nothing ever overrode them: every container wanted the same list edit, so the messages were shared helpers in message form, and each surface's `Drop` handler still had to send `Place`. Writing `children` in the container that owns it, and taking a node out in the one tool that moves nodes, needs neither the card nor the messages.
-
-**A drop preview in `grip`.** The select tool asks the container under the pointer where the node would land, on every move, and puts the answer in `grip`. Rejected because it needs a second mode for `Drop` that answers without placing. A pointer that tells every tab where it is on that tab's screen lets each container work the preview out itself.
-
-**The package as a node in the card document.** `package: Node` next to `card: id`. Rejected because the tree walk then descends into the package document and every file in it.
+**Generic `Node`.** Whether to make `Node` generic in its accepted messages, so that handling an undeclared message is a type error rather than a runtime one.

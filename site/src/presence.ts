@@ -1,8 +1,9 @@
-import type {
-  AutomergeUrl,
-  DocHandle,
-  PeerId,
-  Repo,
+import {
+  isValidAutomergeUrl,
+  type AutomergeUrl,
+  type DocHandle,
+  type PeerId,
+  type Repo,
 } from "@automerge/automerge-repo";
 import { createEffect, onCleanup, untrack } from "solid-js";
 import {
@@ -90,7 +91,7 @@ export function presence(repo: Repo, me: AutomergeUrl): Behavior {
         for (const [path, overlay] of Object.entries(
           node.request(State).overlays(),
         )) {
-          const value = plain(overlay.layers[0].value);
+          const value = plain(overlay.layers[0].value, root);
           if (value !== undefined) puts[path] = value;
         }
         nodes[node.url] = puts;
@@ -166,18 +167,24 @@ function pointerOf(from: Node, user: AutomergeUrl): Node | undefined {
   return state<User>(nodeIn(from.scope, user)).pointer;
 }
 
-// a put as it travels: nodes become urls, functions (views) stay home
-function plain(value: unknown): unknown {
-  if (value instanceof Node) return value.url;
+// a put as it travels: nodes become urls. Functions (views) and computed nodes stay home: every tab computes its own
+function plain(value: unknown, root: Node): unknown {
+  if (value instanceof Node) return persisted(value) ? value.url : undefined;
+  if (typeof value === "string" && isValidAutomergeUrl(value))
+    return persisted(nodeIn(root.scope, value)) ? value : undefined;
   if (typeof value === "function") return undefined;
-  if (Array.isArray(value)) return value.map(plain);
+  if (Array.isArray(value)) return value.map((v) => plain(v, root));
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
-      const p = plain(v);
+      const p = plain(v, root);
       if (p !== undefined) out[k] = p;
     }
     return out;
   }
   return value;
+}
+
+function persisted(node: Node): boolean {
+  return node.request(State).persisted;
 }

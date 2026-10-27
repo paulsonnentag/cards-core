@@ -43,6 +43,8 @@ A **behavior** is the code the dealer attaches to every node with a card's tag. 
 
 **Depend on a tag directly rather than add a generic message.** If one card needs to know about another, look the other card up by its tag. The map finds the select tool with `Lookup` and pans only while it's selected. A message that only one card would ever handle is a dependency in disguise.
 
+**Compose through tags.** A card that wants another card's behavior on a node gives the node that card's tag, rather than calling into the other card. Put the tag rather than storing it when it depends on a condition: the put goes away when the condition does, and the other card detaches with it. The French card puts the beret tag while a shape is in France (`france/src/french.ts`), and the beret card knows nothing about France.
+
 **Declare what you handle; send freely.** A descriptor's `accepts` lists every message its behavior registers a handler for, on any node. Sending isn't restricted.
 
 ## Shared and local state
@@ -50,6 +52,10 @@ A **behavior** is the code the dealer attaches to every node with a card's tag. 
 **Shared state is plain data in puts.** Presence syncs a user's puts to every tab, so another tab sees what a pointer holds and where it hovers (`holding`, `grip`, `position`). Keep these in shared terms that mean the same thing in every tab.
 
 **Screen-specific state is a function in a put.** A function value never syncs, so each tab computes it for itself. The pointer's `client()` and every card's `view` work this way. When a value depends on this screen, put a function instead of a number.
+
+**Compute what you can derive.** Something that follows from other data, like a decoration that follows its shape, is a computed node rather than a document. It lives in each tab and never needs cleaning up in storage. Show it the way a stored node is shown, by putting it where a stored one would be stored, such as a container's `children`; everything that reads the field treats both alike. The beret (`beret/src/beret.ts`) and each card's tag token (`tools/src/card.tsx`) are computed.
+
+**Ask what a node is, not where it sits.** Code that must treat computed nodes differently checks `State.persisted`, never a path or a field name. Presence leaves computed nodes home and the select tool lifts a stored copy of one, wherever it was put.
 
 **Discover through the protocol, not the filesystem.** Packages are documents referenced by URL, and a checkout may not have them on disk. Find cards through descriptors, tags and `Lookup`, never by looking for folders.
 

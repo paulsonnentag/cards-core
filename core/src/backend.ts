@@ -1,4 +1,5 @@
 import {
+  generateAutomergeUrl,
   isValidAutomergeUrl,
   type AutomergeUrl,
   type DocHandle,
@@ -15,12 +16,22 @@ import {
 import { Node, nodeIn, type Behavior, type Process } from "./node";
 import { applyPuts, overlays, withPut, without, type Layers } from "./puts";
 import { State } from "./state";
-import { childNodes, hasTag, Lookup, NewNode, rootOf, walk } from "./tree";
+import {
+  childNodes,
+  hasTag,
+  Lookup,
+  NewComputedNode,
+  NewNode,
+  rootOf,
+  walk,
+} from "./tree";
 
-// Attached to the root: answers State, Lookup and NewNode for every node, from documents in `repo` and puts in
-// memory, and keeps every node's `parent` current from what the documents reference.
+// Attached to the root: answers State, Lookup, NewNode and NewComputedNode for every node, from documents in `repo`
+// (or in memory, for a computed node) and puts in memory, and keeps every node's `parent` current from what the
+// documents reference.
 export function backend(repo: Repo): Behavior {
   const docs = new Map<AutomergeUrl, Stored>();
+  const computed = new Set<AutomergeUrl>();
   const layers = new Map<AutomergeUrl, Signal<Layers>>();
   let seq = 0;
 
@@ -50,11 +61,19 @@ export function backend(repo: Repo): Behavior {
             from.process,
           ),
         ),
+      persisted: !computed.has(from.url),
     }));
 
     root.on(NewNode, (initial, _, from) =>
       nodeIn(from.scope, create(initial, from.process)),
     );
+
+    root.on(NewComputedNode, (initial, _, from) => {
+      const url = generateAutomergeUrl();
+      docs.set(url, memory(stored(initial)));
+      computed.add(url);
+      return nodeIn(from.scope, url);
+    });
 
     root.on(Lookup, ({ tag, orCreate }, _, from) => {
       const found = find(from, tag);
@@ -157,6 +176,20 @@ export function backend(repo: Repo): Behavior {
         handle.change(fn, process ? { message: process } : undefined),
     };
   }
+}
+
+// a computed node's state: never synced, never stored
+function memory(initial: unknown): Stored {
+  const [doc, setDoc] = createSignal<any>(initial);
+  return {
+    read: doc,
+    change: (fn) =>
+      setDoc((d: any) => {
+        const copy = structuredClone(d);
+        fn(copy);
+        return copy;
+      }),
+  };
 }
 
 type Stored = {

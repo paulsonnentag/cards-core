@@ -16,6 +16,12 @@ export const Lookup = message<
 // as references, so a document can be made with others nested in it
 export const NewNode = message<Record<string, unknown>, Node>("core/new-node");
 
+// a node with no document: `initial` plus puts, in this tab only. Every tab computes its own, so one is placed with
+// a put, never by storing its url; `State.persisted` tells it apart
+export const NewComputedNode = message<Record<string, unknown>, Node>(
+  "core/new-computed-node",
+);
+
 export function rootOf(node: Node): Node {
   let n = node;
   while (n.parent) n = n.parent;
@@ -26,14 +32,21 @@ export function hasTag(node: Node, tag: string): boolean {
   return Boolean(state<Partial<Tagged>>(node)["@tags"]?.[tag]);
 }
 
-// nodes referenced from a node's state, directly or in a list
+// nodes referenced from a node's state, stored or put alike: in a field, in a list, or in a record of nodes such
+// as `children`. Not in an object that holds anything else: a tool's press holds a node among other values, and
+// that node isn't a child
 export function childNodes(node: Node): Node[] {
-  const out: Node[] = [];
-  for (const value of Object.values(state<Record<string, unknown>>(node))) {
-    for (const v of Array.isArray(value) ? value : [value])
-      if (v instanceof Node) out.push(v);
-  }
-  return out;
+  return Object.values(state<Record<string, unknown>>(node)).flatMap(nodesIn);
+}
+
+export function nodesIn(value: unknown): Node[] {
+  if (value instanceof Node) return [value];
+  if (Array.isArray(value)) return value.filter((v) => v instanceof Node);
+  if (value === null || typeof value !== "object") return [];
+  const values = Object.values(value);
+  return values.length > 0 && values.every((v) => v instanceof Node)
+    ? values
+    : [];
 }
 
 // every node reachable from the root through node values in state, each once, first path wins. Walking also

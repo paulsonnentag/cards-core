@@ -56,6 +56,20 @@ body {
   transform-origin: 0 0;
 }
 
+/* a node no card draws */
+.unknown {
+  box-sizing: border-box;
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  font: 700 26px/1 var(--font);
+  color: #8a857a;
+  background: var(--paper);
+  border: 2px dashed #b9b3a6;
+  border-radius: 8px;
+}
+
 /* what a pointer holds: lifted above everything, see-through above a container that would take it */
 .held {
   position: absolute;
@@ -90,20 +104,19 @@ body {
 .cursor {
   position: absolute;
   z-index: 11; /* above what the pointer holds */
-  width: 8px;
-  height: 8px;
-  margin: -5px 0 0 -5px;
-  border: 1px solid var(--ink);
-  border-radius: 50%;
-  background: var(--accent);
+  margin: -1px 0 0 -1px; /* the arrow's tip, not its box, sits on the position */
+  overflow: visible;
   pointer-events: none;
 }
 
-/* someone else's */
-.cursor.remote {
-  background: var(--droppable);
+.cursor path {
+  fill: var(--droppable);
+  stroke: var(--ink);
+  stroke-width: 1.2;
+  stroke-linejoin: round;
 }
 
+/* someone else's */
 .line {
   display: block;
   overflow: visible;
@@ -332,12 +345,29 @@ button.chip:hover {
 }
 
 .card {
+  position: relative;
   width: 360px;
   padding: 14px 16px 16px;
 }
 
+/* the tag a card is dealt to; drag it onto something to give it that tag */
+.card-token {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  cursor: grab;
+}
+
+.card-token:active {
+  cursor: grabbing;
+}
+
+.token {
+  margin: 0;
+}
+
 .card-title {
-  margin: 0 0 10px;
+  margin: 0 90px 10px 0;
   font-size: 15px;
   font-weight: 700;
 }

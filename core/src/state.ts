@@ -13,6 +13,7 @@ export type State<T = any> = {
   overlays(): Record<string, Overlay>; // every path that has a put
   overlays(path: string): Overlay | undefined; // just that path
   clone(): Node; // a fresh copy of the stored value, without puts; place it by assigning it in a change
+  persisted: boolean; // false for a computed node, which only this tab has: never store its url, clone it instead
 };
 
 export type Overlay = {

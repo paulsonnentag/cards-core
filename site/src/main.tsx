@@ -67,10 +67,15 @@ async function openSpace(): Promise<Node> {
   if (isValidAutomergeUrl(existing)) return withBackend(existing);
 
   // the root is the one document created outside the backend, which needs a root to answer from
-  const handle = repo.create({ ...tagged(t.canvas), children: [] as string[] });
+  const handle = repo.create({
+    ...tagged(t.canvas),
+    children: {} as Record<string, string>,
+  });
   const root = withBackend(handle.url);
   const layout = await seed(root);
-  handle.change((d) => d.children.push(...layout.map((n) => n.url)));
+  handle.change((d) => {
+    for (const node of layout) d.children[node.url] = node.url;
+  });
   location.hash = handle.url;
   return root;
 }
@@ -95,6 +100,7 @@ async function seed(root: Node): Promise<Node[]> {
           ...tagged(t.shape, "card"),
           x: 0,
           y: 0,
+          order: cards.length,
           card: tag(url, descriptor.id),
           ...(descriptor.example && { example: descriptor.example(root) }),
         }),
@@ -102,25 +108,42 @@ async function seed(root: Node): Promise<Node[]> {
   }
 
   return [
-    request(NewNode, { ...tagged(t.shape, t.select, t.default), x: 16, y: 16 }),
-    request(NewNode, { ...tagged(t.shape, t.pen), x: 112, y: 16 }),
-    request(NewNode, { ...tagged(t.shape, t.inspector), x: 16, y: 64 }),
+    request(NewNode, {
+      ...tagged(t.shape, t.select, t.default),
+      x: 16,
+      y: 16,
+      order: 0,
+    }),
+    request(NewNode, { ...tagged(t.shape, t.pen), x: 112, y: 16, order: 1 }),
+    request(NewNode, {
+      ...tagged(t.shape, t.inspector),
+      x: 16,
+      y: 64,
+      order: 2,
+    }),
     request(NewNode, {
       ...tagged(t.shape, t.deck),
       x: 340,
       y: 16,
-      children: cards,
+      order: 3,
+      children: byUrl(cards),
     }),
     request(NewNode, {
       ...tagged(t.shape, t.map),
       x: 340,
       y: 346,
+      order: 4,
       width: 600,
       height: 380,
       camera: BERLIN,
-      children: [],
+      children: {},
     }),
   ];
+}
+
+// children as a container stores them
+function byUrl(nodes: Node[]): Record<string, Node> {
+  return Object.fromEntries(nodes.map((node) => [node.url, node]));
 }
 
 // the user at this keyboard, with their pointer; one per tab, so two tabs are two cursors
